@@ -33,7 +33,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		// API Keys
 		APIKey:          getEnv("API_KEY", ""),
-		OpenAIApiKey:    getEnv("OPENAI_API_KEY", ""),
+		OpenAIApiKey:    getEnv("OPENAI_API_KEY", getEnv("API_KEY", "")),
 		CoinGeckoApiKey: getEnv("COINGECKO_API_KEY", ""),
 
 		// Server Configuration

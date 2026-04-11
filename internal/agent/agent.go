@@ -14,7 +14,7 @@ type Agent struct {
 func NewAgent(cfg *config.Config) *Agent {
 	llmClient := llm.NewClient(cfg.OpenAIApiKey)
 	return &Agent{
-		planner:  NewPlanner(),
+		planner:  NewPlanner(llmClient),
 		executor: NewExecutor(cfg, llmClient),
 		state:    NewState(),
 	}

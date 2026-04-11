@@ -18,11 +18,9 @@ func main() {
 
 	// Test multiple queries
 	queries := []string{
-		"Стоит ли покупать BTC?",
-		"Какая цена Ethereum?",
-		"Привет, меня зовут Алексей",
-		"Hello!",
-		"Какой курс биткоина?",
+		// "Какая цена Ethereum?",
+		// "Какой курс биткоина?",
+		"А сколько стоит Солана?",
 	}
 
 	for _, query := range queries {
