@@ -4,7 +4,7 @@ import "fmt"
 
 type BTCTool struct{}
 
-func NewBTCTool() *BTCTool {
+func NewBTCTool() Tool {
 	return &BTCTool{}
 }
 

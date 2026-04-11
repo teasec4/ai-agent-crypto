@@ -1,6 +1,9 @@
 package agent
 
-import "strings"
+import (
+	"ai-agent/internal/llm"
+	"strings"
+)
 
 type Planner interface {
 	Plan(input string, state *State) Plan
@@ -10,16 +13,28 @@ type Plan struct {
 	Action string
 }
 
-type SimplePlanner struct{}
+type SimplePlanner struct{
+	llm *llm.Client
+}
 
-func NewPlanner() Planner {
-	return &SimplePlanner{}
+func NewPlanner(llmClient *llm.Client) Planner {
+	return &SimplePlanner{llm: llmClient}
 }
 
 func (p *SimplePlanner) Plan(input string, state *State) Plan {
-	// тут LLM или простая логика
-	if strings.Contains(input, "BTC") {
-		return Plan{Action: "get_btc_price"}
+	prompt := `
+		Ты AI агент. Определи действие.
+		Возможные действия:
+		- get_btc_price
+		- get_eth_price
+		
+		Ответь ТОЛЬКО названием действия.
+		
+		Запрос: ` + input
+
+	resp, _ := p.llm.Chat(prompt)
+
+	return Plan{
+		Action: strings.TrimSpace(resp),
 	}
-	return Plan{Action: "unknown"}
 }

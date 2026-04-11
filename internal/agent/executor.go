@@ -1,13 +1,19 @@
 package agent
 
-import "ai-agent/internal/tools"
+import (
+	"ai-agent/internal/llm"
+	"ai-agent/internal/tools"
+	"fmt"
+)
 
 type Executor struct {
 	tools map[string]tools.Tool
+	llm *llm.Client
 }
 
-func NewExecutor() Executor {
+func NewExecutor(llmClient *llm.Client) Executor {
 	return Executor{
+		llm: llmClient,
 		tools: map[string]tools.Tool{
 			"get_btc_price": tools.NewBTCTool(),
 		},
@@ -22,8 +28,12 @@ func (e Executor) Execute(plan Plan, state *State) string {
 
 	result, _ := tool.Run()
 
-	state.LastAction = plan.Action
-	state.LastResult = result
+	decisionPrompt := fmt.Sprintf(`
+		Цена: %s
+		Стоит ли покупать? Ответь кратко.
+		`, result)
 
-	return result
+	decision, _ := e.llm.Chat(decisionPrompt)
+
+	return decision
 }
