@@ -1,39 +1,67 @@
 package agent
 
 import (
+	"ai-agent/internal/config"
 	"ai-agent/internal/llm"
 	"ai-agent/internal/tools"
-	"fmt"
 )
 
 type Executor struct {
 	tools map[string]tools.Tool
-	llm *llm.Client
+	llm   *llm.Client
+	cfg   *config.Config
 }
 
-func NewExecutor(llmClient *llm.Client) Executor {
+func NewExecutor(cfg *config.Config, llmClient *llm.Client) Executor {
+	// Create crypto tool with config
+	cryptoTool := tools.NewCryptoTool(cfg)
+
 	return Executor{
-		llm: llmClient,
 		tools: map[string]tools.Tool{
-			"get_btc_price": tools.NewBTCTool(),
+			"get_crypto_price": cryptoTool,
+			"greeting":         tools.NewGreetingTool(),
+			"unknown":          &UnknownTool{},
 		},
+		llm: llmClient,
+		cfg: cfg,
 	}
 }
 
 func (e Executor) Execute(plan Plan, state *State) string {
 	tool, ok := e.tools[plan.Action]
 	if !ok {
-		return "неизвестное действие"
+		tool = e.tools["unknown"]
 	}
 
-	result, _ := tool.Run()
+	// Prepare parameters for the tool
+	params := make(map[string]interface{})
+	if plan.Parameters != nil {
+		params = plan.Parameters
+	}
 
-	decisionPrompt := fmt.Sprintf(`
-		Цена: %s
-		Стоит ли покупать? Ответь кратко.
-		`, result)
+	// Add any additional context from state
+	if state.LastQuery != "" {
+		params["context"] = state.LastQuery
+	}
 
-	decision, _ := e.llm.Chat(decisionPrompt)
+	result, err := tool.Run(params)
+	if err != nil {
+		return "Ошибка при выполнении действия: " + err.Error()
+	}
 
-	return decision
+	// Update state
+	state.LastAction = plan.Action
+	state.LastResult = result
+	if plan.Input != "" {
+		state.LastQuery = plan.Input
+	}
+
+	return result
+}
+
+// UnknownTool handles unknown actions
+type UnknownTool struct{}
+
+func (t *UnknownTool) Run(params map[string]interface{}) (string, error) {
+	return "Извините, я не могу выполнить это действие. Пожалуйста, уточните ваш запрос.", nil
 }

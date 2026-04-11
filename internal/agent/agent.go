@@ -1,24 +1,27 @@
 package agent
 
-import "ai-agent/internal/llm"
+import (
+	"ai-agent/internal/config"
+	"ai-agent/internal/llm"
+)
 
-type Agent struct{
+type Agent struct {
 	planner  Planner
-    executor Executor
-    state    *State
+	executor Executor
+	state    *State
 }
 
-func NewAgent(apiKey string)*Agent{
-	llmClient := llm.NewClient(apiKey)
+func NewAgent(cfg *config.Config) *Agent {
+	llmClient := llm.NewClient(cfg.OpenAIApiKey)
 	return &Agent{
-		planner:  NewPlanner(llmClient),
-        executor: NewExecutor(llmClient),
-        state:    NewState(),
+		planner:  NewPlanner(),
+		executor: NewExecutor(cfg, llmClient),
+		state:    NewState(),
 	}
 }
 
 func (a *Agent) Run(input string) string {
-    plan := a.planner.Plan(input, a.state)
-    result := a.executor.Execute(plan, a.state)
-    return result
+	plan := a.planner.Plan(input, a.state)
+	result := a.executor.Execute(plan, a.state)
+	return result
 }

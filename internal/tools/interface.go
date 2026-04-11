@@ -1,5 +1,5 @@
 package tools
 
 type Tool interface {
-    Run() (string, error)
+	Run(params map[string]interface{}) (string, error)
 }

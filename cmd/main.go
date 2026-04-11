@@ -6,20 +6,28 @@ import (
 
 	"ai-agent/internal/agent"
 	"ai-agent/internal/config"
-	"ai-agent/internal/store"
 )
 
 func main() {
 	config, err := config.Load()
-	if err != nil{
+	if err != nil {
 		log.Fatalf("error - %v", err)
 	}
-	
-	profile := store.NewProfile("Max", 1000)
-	fmt.Printf("Profile name %s, balance %v $\n", profile.Name, profile.Balance)
-	
-	agent := agent.NewAgent(config.APIKey)
 
-	result := agent.Run("Стоит ли покупать BTC?")
-	fmt.Println(result)
+	agent := agent.NewAgent(config)
+
+	// Test multiple queries
+	queries := []string{
+		"Стоит ли покупать BTC?",
+		"Какая цена Ethereum?",
+		"Привет, меня зовут Алексей",
+		"Hello!",
+		"Какой курс биткоина?",
+	}
+
+	for _, query := range queries {
+		fmt.Printf("\nЗапрос: %s\n", query)
+		result := agent.Run(query)
+		fmt.Printf("Ответ: %s\n", result)
+	}
 }
