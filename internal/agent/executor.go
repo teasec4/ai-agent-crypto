@@ -18,9 +18,8 @@ func NewExecutor(cfg *config.Config, llmClient *llm.Client) Executor {
 
 	return Executor{
 		tools: map[string]tools.Tool{
-			"get_crypto_price": cryptoTool,
-			"greeting":         tools.NewGreetingTool(),
-			"unknown":          &UnknownTool{},
+			"get_crypto_price":     cryptoTool,
+			"unknown":              &UnknownTool{},
 		},
 		llm: llmClient,
 		cfg: cfg,
