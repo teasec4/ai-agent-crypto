@@ -1,10 +1,5 @@
 package context
 
-// Provider defines the interface for retrieving workspace context.
-type Provider interface {
-	GetContext(cmd string) (RepoContext, error)
-}
-
 // WorkspaceContext holds contextual information about the workspace.
 type WorkspaceContext struct {
 	Cwd           string

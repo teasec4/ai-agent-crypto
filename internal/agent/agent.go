@@ -11,10 +11,10 @@ import (
 
 // Agent orchestrates the full loop: Plan → Act → Observe.
 type Agent struct {
-	planner   planner.Planner
-	executor  executor.Executor
-	state     *State
-	registry  *registry.Registry
+	planner       planner.Planner
+	executor      executor.Executor
+	state         *State
+	registry      *registry.Registry
 	maxIterations int
 }
 
@@ -27,10 +27,10 @@ func NewAgent(
 	maxIterations int,
 ) *Agent {
 	return &Agent{
-		planner:   planner.NewLLMPlanner(llmClient, reg),
-		executor:  executor.New(reg),
-		state:     NewState(),
-		registry:  reg,
+		planner:       planner.NewLLMPlanner(llmClient, reg),
+		executor:      executor.New(reg),
+		state:         NewState(),
+		registry:      reg,
 		maxIterations: maxIterations,
 	}
 }

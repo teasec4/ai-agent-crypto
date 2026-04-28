@@ -1,7 +1,9 @@
 package tools
 
+// GitTool provides information about the current git repository.
 type GitTool struct{}
 
+// NewGitTool creates a new GitTool instance.
 func NewGitTool() Tool {
 	return &GitTool{}
 }

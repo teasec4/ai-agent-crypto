@@ -21,7 +21,7 @@ func main() {
 	llmClient := llm.NewClient(cfg.OpenAIApiKey)
 
 	// Create tools
-	cryptoTool := tools.NewCryptoTool(cfg)
+	cryptoTool := tools.NewCryptoTool()
 	gitTool := tools.NewGitTool()
 	helpTool := tools.NewHelpTool()
 	unknownTool := tools.NewUnknownTool()

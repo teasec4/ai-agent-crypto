@@ -5,6 +5,7 @@ import "fmt"
 // HelpTool returns the list of available tools.
 type HelpTool struct{}
 
+// NewHelpTool creates a new HelpTool instance.
 func NewHelpTool() Tool {
 	return &HelpTool{}
 }
@@ -24,6 +25,7 @@ func (t *HelpTool) Run(params map[string]interface{}) (string, error) {
 // UnknownTool handles unknown/unrecognised actions.
 type UnknownTool struct{}
 
+// NewUnknownTool creates a new UnknownTool instance.
 func NewUnknownTool() Tool {
 	return &UnknownTool{}
 }

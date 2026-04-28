@@ -1,6 +1,9 @@
 package planner
 
-import "ai-agent/internal/tools/registry"
+import (
+	"ai-agent/internal/llm"
+	"ai-agent/internal/tools/registry"
+)
 
 // PlanResult is the output of the planning phase.
 type PlanResult struct {
@@ -25,11 +28,9 @@ type HistoryEntry struct {
 }
 
 // NewPlanner creates the appropriate planner based on config.
-func NewPlanner(llmClient interface {
-	Chat(prompt string) (string, error)
-}, registry *registry.Registry) Planner {
+func NewPlanner(llmCLient llm.LlmClient, registry *registry.Registry) Planner {
 	return &LLMPlanner{
-		llm:      llmClient,
+		llm:      llmCLient,
 		registry: registry,
 	}
 }
