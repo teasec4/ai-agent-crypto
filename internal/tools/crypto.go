@@ -18,13 +18,23 @@ type CryptoTool struct {
 }
 
 // NewCryptoTool creates a new CryptoTool instance
-func NewCryptoTool(cfg *config.Config) *CryptoTool {
+func NewCryptoTool(cfg *config.Config) Tool {
 	return &CryptoTool{
 		config: cfg,
 		client: &http.Client{
 			Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
 		},
 	}
+}
+
+// Name returns the tool name.
+func (t *CryptoTool) Name() string {
+	return "get_crypto_price"
+}
+
+// Description returns a human-readable description of the tool.
+func (t *CryptoTool) Description() string {
+	return "Get the current price of a cryptocurrency. Parameters: query (crypto name, e.g. bitcoin, ethereum), currency (fiat currency, e.g. usd, eur)"
 }
 
 // Run executes the crypto price check

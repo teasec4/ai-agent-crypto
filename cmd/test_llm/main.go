@@ -6,25 +6,42 @@ import (
 
 	"ai-agent/internal/agent"
 	"ai-agent/internal/config"
+	"ai-agent/internal/llm"
+	"ai-agent/internal/tools"
+	"ai-agent/internal/tools/registry"
 )
 
 func main() {
-	config, err := config.Load()
+	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("error - %v", err)
+		log.Fatalf("error loading config: %v", err)
 	}
 
-	agent := agent.NewAgent(config)
+	// Create LLM client
+	llmClient := llm.NewClient(cfg.OpenAIApiKey)
 
-	// Test multiple queries
+	// Create tools
+	cryptoTool := tools.NewCryptoTool(cfg)
+	gitTool := tools.NewGitTool()
+	helpTool := tools.NewHelpTool()
+	unknownTool := tools.NewUnknownTool()
+
+	// Create registry
+	reg := registry.New(cryptoTool, gitTool, helpTool, unknownTool)
+
+	// Create agent
+	agent := agent.NewAgent(llmClient, reg, 5)
+
+	// Test queries
 	queries := []string{
-		// "Какая цена Ethereum?",
-		// "Какой курс биткоина?",
 		"А сколько стоит Солана?",
+		"Какая цена биткоина?",
+		"Привет!",
+		"Что ты умеешь?",
 	}
 
 	for _, query := range queries {
-		fmt.Printf("\nЗапрос: %s\n", query)
+		fmt.Printf("\n=== Запрос: %s ===\n", query)
 		result := agent.Run(query)
 		fmt.Printf("Ответ: %s\n", result)
 	}
