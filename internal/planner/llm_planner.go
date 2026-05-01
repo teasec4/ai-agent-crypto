@@ -5,22 +5,19 @@ import (
 	"fmt"
 	"strings"
 
+	"ai-agent/internal/llm"
 	"ai-agent/internal/tools/registry"
 )
 
 // LLMPlanner uses an LLM to decide the next action.
 type LLMPlanner struct {
-	llm interface {
-		Chat(prompt string) (string, error)
-	}
+	llmClient llm.LlmClient
 	registry *registry.Registry
 }
 
-func NewLLMPlanner(llmClient interface {
-	Chat(prompt string) (string, error)
-}, reg *registry.Registry) *LLMPlanner {
+func NewLLMPlanner(llmClient llm.LlmClient, reg *registry.Registry) *LLMPlanner {
 	return &LLMPlanner{
-		llm:      llmClient,
+		llmClient:      llmClient,
 		registry: reg,
 	}
 }
@@ -30,7 +27,7 @@ func (p *LLMPlanner) Plan(input string, history []HistoryEntry, toolList string)
 	// Build the prompt
 	prompt := p.buildPrompt(input, history, toolList)
 
-	response, err := p.llm.Chat(prompt)
+	response, err := p.llmClient.Chat(prompt)
 	if err != nil {
 		return p.fallbackPlan(input, fmt.Sprintf("LLM error: %v", err))
 	}

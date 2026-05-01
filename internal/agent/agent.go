@@ -5,32 +5,29 @@ import (
 	"strings"
 
 	"ai-agent/internal/executor"
+	"ai-agent/internal/llm"
 	"ai-agent/internal/planner"
 	"ai-agent/internal/tools/registry"
 )
 
 // Agent orchestrates the full loop: Plan → Act → Observe.
 type Agent struct {
-	planner       planner.Planner
-	executor      executor.Executor
-	state         *State
+	llmClient     llm.LlmClient
 	registry      *registry.Registry
+	state         *State
 	maxIterations int
 }
 
 // NewAgent creates a new Agent with the given dependencies.
 func NewAgent(
-	llmClient interface {
-		Chat(prompt string) (string, error)
-	},
+	llmClient llm.LlmClient,
 	reg *registry.Registry,
 	maxIterations int,
 ) *Agent {
 	return &Agent{
-		planner:       planner.NewLLMPlanner(llmClient, reg),
-		executor:      executor.New(reg),
-		state:         NewState(),
+		llmClient:     llmClient,
 		registry:      reg,
+		state:         NewState(),
 		maxIterations: maxIterations,
 	}
 }
@@ -40,6 +37,11 @@ func NewAgent(
 func (a *Agent) Run(input string) string {
 	a.state = NewState()
 
+	// Create fresh planner and executor for this run.
+	// They are lightweight and stateless, so this is fine.
+	plnr := planner.NewLLMPlanner(a.llmClient, a.registry)
+	exctr := executor.New(a.registry)
+
 	toolList := a.registry.List()
 
 	// We'll track the current plan and result across iterations.
@@ -47,7 +49,7 @@ func (a *Agent) Run(input string) string {
 
 	for i := 0; i < a.maxIterations; i++ {
 		// --- Plan ---
-		planResult := a.planner.Plan(currentInput, a.state.History, toolList)
+		planResult := plnr.Plan(currentInput, a.state.History, toolList)
 
 		// If the planner says we're done, return immediately with reasoning.
 		if planResult.Done {
@@ -58,7 +60,7 @@ func (a *Agent) Run(input string) string {
 		}
 
 		// --- Act ---
-		result, err := a.executor.Execute(planResult)
+		result, err := exctr.Execute(planResult)
 		if err != nil {
 			errMsg := fmt.Sprintf("Error executing '%s': %v", planResult.Action, err)
 			a.state = a.state.WithResult(currentInput, planResult.Action, errMsg)
@@ -66,10 +68,9 @@ func (a *Agent) Run(input string) string {
 		}
 
 		// --- Observe ---
-		// Save the step
 		a.state = a.state.WithResult(currentInput, planResult.Action, result)
 
-		// Check if the result contains a final answer (i.e., no more actions needed)
+		// Check if the result contains a final answer
 		if a.isFinalResult(result) {
 			return result
 		}

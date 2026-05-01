@@ -12,46 +12,25 @@ import (
 type Client struct {
 	APIKey  string
 	BaseURL string
+	Model string
 	Client  *http.Client
 }
 
-func NewClient(apiKey string) *Client {
+func NewClient(apiKey string, baseUrl string, model string) *Client {
 	return &Client{
 		APIKey:  apiKey,
-		BaseURL: "https://api.deepseek.com",
+		BaseURL: baseUrl,
+		Model: model,
 		Client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
 }
 
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type Request struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-}
-
-type Response struct {
-	Choices []struct {
-		Message Message `json:"message"`
-	} `json:"choices"`
-	Error *APIError `json:"error,omitempty"`
-}
-
-type APIError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-	Param   string `json:"param"`
-	Code    string `json:"code"`
-}
 
 func (c *Client) Chat(prompt string) (string, error) {
 	reqBody := Request{
-		Model: "deepseek-chat",
+		Model: c.Model,
 		Messages: []Message{
 			{Role: "user", Content: prompt},
 		},
@@ -64,7 +43,7 @@ func (c *Client) Chat(prompt string) (string, error) {
 
 	req, err := http.NewRequest(
 		"POST",
-		"https://api.deepseek.com/v1/chat/completions",
+		c.BaseURL,
 		bytes.NewBuffer(body),
 	)
 	if err != nil {

@@ -25,7 +25,9 @@ func main() {
 	unknownTool := tools.NewUnknownTool()
 	
 	// Create LLM client
-	llmClient := llm.NewClient(cfg.OpenAIApiKey, )
+	const baseUrlDeepSeek string = "https://api.deepseek.com/v1/chat/completions"
+	const modelDeepSeek string = "deepseek-chat"
+	llmClient := llm.NewClient(cfg.OpenAIApiKey, baseUrlDeepSeek, modelDeepSeek)
 
 	// Create registry
 	reg := registry.New(cryptoTool, gitTool, helpTool, unknownTool)
