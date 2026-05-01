@@ -1,5 +1,7 @@
 package llm
 
-type LlmClient interface{
-	Chat(prompt string) (string, error)
+// LlmClient defines the interface for LLM communication.
+type LlmClient interface {
+	// Chat sends a list of messages (system/user/assistant/tool) and returns the assistant's reply.
+	Chat(messages []Message) (string, error)
 }

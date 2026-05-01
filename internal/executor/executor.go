@@ -7,8 +7,6 @@ import (
 	"ai-agent/internal/tools/registry"
 )
 
-
-
 // ToolExecutor is the default implementation of Executor.
 type ToolExecutor struct {
 	registry *registry.Registry
@@ -39,6 +37,3 @@ func (e *ToolExecutor) Execute(plan planner.PlanResult) (string, error) {
 
 	return result, nil
 }
-
-
-

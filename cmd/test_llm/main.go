@@ -17,8 +17,14 @@ func main() {
 		log.Fatalf("error loading config: %v", err)
 	}
 
-	// Create LLM client
-	llmClient := llm.NewClient(cfg.OpenAIApiKey)
+	// Create LLM client with config values
+	llmClient := llm.NewClientWithOptions(
+		cfg.OpenAIApiKey,
+		cfg.LLMBaseURL,
+		cfg.LLMModel,
+		cfg.LLMTemperature,
+		cfg.LLMMaxTokens,
+	)
 
 	// Create tools
 	cryptoTool := tools.NewCryptoTool()
@@ -30,7 +36,7 @@ func main() {
 	reg := registry.New(cryptoTool, gitTool, helpTool, unknownTool)
 
 	// Create agent
-	agent := agent.NewAgent(llmClient, reg, 5)
+	ag := agent.NewAgent(llmClient, reg, 5)
 
 	// Test queries
 	queries := []string{
@@ -42,7 +48,7 @@ func main() {
 
 	for _, query := range queries {
 		fmt.Printf("\n=== Запрос: %s ===\n", query)
-		result := agent.Run(query)
+		result := ag.Run(query)
 		fmt.Printf("Ответ: %s\n", result)
 	}
 }

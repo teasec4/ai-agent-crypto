@@ -1,13 +1,16 @@
 package llm
 
+// Message is a single turn in a conversation passed to the LLM.
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
 type Request struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	Temperature float64   `json:"temperature,omitempty"`
+	MaxTokens   int       `json:"max_tokens,omitempty"`
 }
 
 // Choice represents a single completion choice returned by the API.

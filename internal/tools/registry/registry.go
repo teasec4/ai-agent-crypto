@@ -3,6 +3,7 @@ package registry
 import (
 	"ai-agent/internal/tools"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -37,8 +38,16 @@ func (r *Registry) Get(name string) tools.Tool {
 func (r *Registry) List() string {
 	var sb strings.Builder
 	sb.WriteString("Available tools:\n")
-	for name, tool := range r.tools {
-		sb.WriteString(fmt.Sprintf("- %s: %s\n", name, tool.Description()))
+
+	// Sort for deterministic output
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		sb.WriteString(fmt.Sprintf("- %s: %s\n", name, r.tools[name].Description()))
 	}
 	return sb.String()
 }

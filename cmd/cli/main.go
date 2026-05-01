@@ -23,17 +23,21 @@ func main() {
 	gitTool := tools.NewGitTool()
 	helpTool := tools.NewHelpTool()
 	unknownTool := tools.NewUnknownTool()
-	
-	// Create LLM client
-	const baseUrlDeepSeek string = "https://api.deepseek.com/v1/chat/completions"
-	const modelDeepSeek string = "deepseek-chat"
-	llmClient := llm.NewClient(cfg.OpenAIApiKey, baseUrlDeepSeek, modelDeepSeek)
+
+	// Create LLM client with config values
+	llmClient := llm.NewClientWithOptions(
+		cfg.OpenAIApiKey,
+		cfg.LLMBaseURL,
+		cfg.LLMModel,
+		cfg.LLMTemperature,
+		cfg.LLMMaxTokens,
+	)
 
 	// Create registry
 	reg := registry.New(cryptoTool, gitTool, helpTool, unknownTool)
 
 	// Create agent with max 5 iterations per request
-	agent := agent.NewAgent(llmClient, reg, 5)
+	ag := agent.NewAgent(llmClient, reg, 5)
 
 	// Interactive CLI
 	scanner := bufio.NewScanner(os.Stdin)
@@ -45,7 +49,7 @@ func main() {
 			continue
 		}
 		log.Println("user input:", input)
-		output := agent.Run(input)
+		output := ag.Run(input)
 		fmt.Printf("Agent: %s\n\n", output)
 	}
 
