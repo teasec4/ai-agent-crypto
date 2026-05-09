@@ -23,8 +23,8 @@ func NewLLMPlanner(llmClient llm.LlmClient, reg *registry.Registry) *LLMPlanner 
 }
 
 // Plan uses the LLM to determine the next action.
-func (p *LLMPlanner) Plan(input string, history []llm.Message, toolList string) PlanResult {
-	messages := p.buildMessages(input, history, toolList)
+func (p *LLMPlanner) Plan(input string, history []llm.Message) PlanResult {
+	messages := p.buildMessages(input, history)
 
 	response, err := p.llmClient.Chat(messages)
 	if err != nil {
@@ -58,7 +58,8 @@ func (p *LLMPlanner) Plan(input string, history []llm.Message, toolList string) 
 // buildMessages constructs the LLM messages array for planning.
 // History messages are passed as-is (not serialised into system prompt)
 // to avoid duplicating context and to present the LLM with a clean message chain.
-func (p *LLMPlanner) buildMessages(input string, history []llm.Message, toolList string) []llm.Message {
+func (p *LLMPlanner) buildMessages(input string, history []llm.Message) []llm.Message {
+	toolList := p.registry.List()
 	systemPrompt := fmt.Sprintf(`You are a planner for an AI agent. Your job is to analyse the user's request and decide:
 1. Which tool/action to use
 2. What parameters are needed

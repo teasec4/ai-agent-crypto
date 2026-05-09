@@ -29,14 +29,12 @@ func main() {
 	// Create tools
 	cryptoTool := tools.NewCryptoTool()
 	gitTool := tools.NewGitTool()
-	helpTool := tools.NewHelpTool()
-	unknownTool := tools.NewUnknownTool()
 
 	// Create registry
-	reg := registry.New(cryptoTool, gitTool, helpTool, unknownTool)
+	reg := registry.New(cryptoTool, gitTool)
 
 	// Create agent
-	ag := agent.NewAgent(llmClient, reg, 5)
+	ag := agent.NewAgent(llmClient, reg)
 
 	// Test queries
 	queries := []string{

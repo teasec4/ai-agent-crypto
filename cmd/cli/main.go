@@ -21,8 +21,6 @@ func main() {
 	// Create tools
 	cryptoTool := tools.NewCryptoTool()
 	gitTool := tools.NewGitTool()
-	helpTool := tools.NewHelpTool()
-	unknownTool := tools.NewUnknownTool()
 
 	// Create LLM client with config values
 	llmClient := llm.NewClientWithOptions(
@@ -34,10 +32,10 @@ func main() {
 	)
 
 	// Create registry
-	reg := registry.New(cryptoTool, gitTool, helpTool, unknownTool)
+	reg := registry.New(cryptoTool, gitTool)
 
-	// Create agent with max 5 iterations per request
-	ag := agent.NewAgent(llmClient, reg, 5)
+	// Create agent
+	ag := agent.NewAgent(llmClient, reg)
 
 	// Interactive CLI
 	scanner := bufio.NewScanner(os.Stdin)
