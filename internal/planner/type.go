@@ -4,6 +4,5 @@ package planner
 type PlanResult struct {
 	Action     string                 `json:"action"`
 	Parameters map[string]interface{} `json:"parameters"`
-	Reasoning  string                 `json:"reasoning"`
-	Done       bool                   `json:"done"`
+	Reply      string `json:"reply"`
 }

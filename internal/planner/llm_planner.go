@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"ai-agent/internal/llm"
+	"ai-agent/internal/memory"
 	"ai-agent/internal/tools/registry"
 )
 
@@ -13,22 +14,25 @@ import (
 type LLMPlanner struct {
 	llmClient llm.LlmClient
 	registry  *registry.Registry
+	workingMemory memory.WorkMemory
 }
 
 func NewLLMPlanner(llmClient llm.LlmClient, reg *registry.Registry) *LLMPlanner {
 	return &LLMPlanner{
 		llmClient: llmClient,
 		registry:  reg,
+		workingMemory: *memory.NewWorkMemory(),
 	}
 }
 
 // Plan uses the LLM to determine the next action.
-func (p *LLMPlanner) Plan(input string, history []llm.Message) PlanResult {
-	messages := p.buildMessages(input, history)
+func (p *LLMPlanner) Plan(input string,) PlanResult {
+	messages := p.buildMessages(input, p.workingMemory.Messages)
 
 	response, err := p.llmClient.Chat(messages)
 	if err != nil {
-		return p.fallbackPlan(input, fmt.Sprintf("LLM error: %v", err))
+		fmt.Sprintf("LLM error: %v", err)
+		
 	}
 
 	// Clean up markdown wrapping
@@ -39,18 +43,17 @@ func (p *LLMPlanner) Plan(input string, history []llm.Message) PlanResult {
 
 	var planResponse PlanResult
 	if err := json.Unmarshal([]byte(response), &planResponse); err != nil {
-		return p.fallbackPlan(input, fmt.Sprintf("JSON parse error: %v", err))
+		fmt.Sprintf("JSON parse error: %v", err)
 	}
 
 	// Validate the action
 	if !p.registry.IsValid(planResponse.Action) {
-		planResponse.Action = "unknown"
-		planResponse.Reasoning = "Action not recognised, falling back to unknown"
+		planResponse.Action = "message"
 	}
 
-	if planResponse.Parameters == nil {
-		planResponse.Parameters = make(map[string]interface{})
-	}
+	// if planResponse.Parameters == nil {
+	// 	planResponse.Parameters = make(map[string]interface{})
+	// }
 
 	return planResponse
 }
@@ -63,7 +66,7 @@ func (p *LLMPlanner) buildMessages(input string, history []llm.Message) []llm.Me
 	systemPrompt := fmt.Sprintf(`You are a planner for an AI agent. Your job is to analyse the user's request and decide:
 1. Which tool/action to use
 2. What parameters are needed
-3. Whether the goal is reached (done = true)
+
 
 %s
 
@@ -71,9 +74,15 @@ Return ONLY valid JSON (no markdown):
 {
   "action": "tool_name",
   "parameters": { "key": "value" },
-  "reasoning": "brief explanation",
-  "done": false
-}`, toolList)
+  
+} or if you can answer by yourself return 
+
+{
+	"action": "message",
+	"reply" : "[your answer]"
+}
+
+`, toolList)
 
 	messages := []llm.Message{{Role: "system", Content: systemPrompt}}
 	messages = append(messages, history...)
@@ -81,12 +90,3 @@ Return ONLY valid JSON (no markdown):
 	return messages
 }
 
-// fallbackPlan is used when the LLM call fails.
-func (p *LLMPlanner) fallbackPlan(input string, reason string) PlanResult {
-	return PlanResult{
-		Action:     "unknown",
-		Parameters: map[string]interface{}{"query": input},
-		Reasoning:  "Fallback: " + reason,
-		Done:       false,
-	}
-}

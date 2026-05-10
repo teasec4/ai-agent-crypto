@@ -29,7 +29,11 @@ func (a *Agent) Run(input string) string {
 	exctr := executor.New(a.registry)
 
 	log.Printf("[Agent] 🤔 Planning...")
-	planResult := plnr.Plan(input, nil)
+	planResult := plnr.Plan(input)
+
+	if planResult.Action == "message" {
+    	return planResult.Reply  // ответила сама LLM
+	}
 
 	log.Printf("[Agent] 🛠️  Executing tool: %s", planResult.Action)
 	result, err := exctr.Execute(planResult)
