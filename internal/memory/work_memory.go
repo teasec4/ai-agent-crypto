@@ -36,14 +36,14 @@ func NewWorkMemory() *WorkMemory {
 	return &WorkMemory{Messages: make([]llm.Message, 0)}
 }
 
-func (h *WorkMemory) addUser(content string) {
+func (h *WorkMemory) AddUser(content string) {
 	h.Messages = append(h.Messages, llm.Message{Role: RoleUser, Content: content})
 }
 
-func (h *WorkMemory) addAssistant(content string) {
+func (h *WorkMemory) AddAssistant(content string) {
 	h.Messages = append(h.Messages, llm.Message{Role: RoleAssistant, Content: content})
 }
 
-func (h *WorkMemory) len() int {
+func (h *WorkMemory) Len() int {
 	return len(h.Messages)
 }

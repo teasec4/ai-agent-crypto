@@ -12,6 +12,7 @@ import (
 type Agent struct {
 	llmClient llm.LlmClient
 	registry  *registry.Registry
+	planner   *planner.LLMPlanner
 }
 
 func NewAgent(
@@ -21,18 +22,18 @@ func NewAgent(
 	return &Agent{
 		llmClient: llmClient,
 		registry:  reg,
+		planner:   planner.NewLLMPlanner(llmClient, reg),
 	}
 }
 
 func (a *Agent) Run(input string) string {
-	plnr := planner.NewLLMPlanner(a.llmClient, a.registry)
 	exctr := executor.New(a.registry)
 
 	log.Printf("[Agent] 🤔 Planning...")
-	planResult := plnr.Plan(input)
+	planResult := a.planner.Plan(input)
 
 	if planResult.Action == "message" {
-    	return planResult.Reply  // ответила сама LLM
+		return planResult.Reply // ответила сама LLM
 	}
 
 	log.Printf("[Agent] 🛠️  Executing tool: %s", planResult.Action)

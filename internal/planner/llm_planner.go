@@ -3,6 +3,7 @@ package planner
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"ai-agent/internal/llm"
@@ -27,9 +28,12 @@ func NewLLMPlanner(llmClient llm.LlmClient, reg *registry.Registry) *LLMPlanner 
 
 // Plan uses the LLM to determine the next action.
 func (p *LLMPlanner) Plan(input string,) PlanResult {
+	log.Printf("[Planner] History: %+v", p.workingMemory.Messages)
+	p.workingMemory.AddUser(input)
 	messages := p.buildMessages(input, p.workingMemory.Messages)
-
+	
 	response, err := p.llmClient.Chat(messages)
+	
 	if err != nil {
 		fmt.Sprintf("LLM error: %v", err)
 		
@@ -45,6 +49,8 @@ func (p *LLMPlanner) Plan(input string,) PlanResult {
 	if err := json.Unmarshal([]byte(response), &planResponse); err != nil {
 		fmt.Sprintf("JSON parse error: %v", err)
 	}
+
+	p.workingMemory.AddAssistant(planResponse.Reply)
 
 	// Validate the action
 	if !p.registry.IsValid(planResponse.Action) {
