@@ -19,12 +19,7 @@ type Config struct {
 	LLMTemperature float64
 	LLMMaxTokens   int
 
-	// Server Configuration
-	Port  string
-	Debug bool
-
 	// Application Settings
-	MaxRetries     int
 	TimeoutSeconds int
 }
 
@@ -46,12 +41,7 @@ func Load() (*Config, error) {
 		LLMTemperature: getEnvFloat("LLM_TEMPERATURE", 0.7),
 		LLMMaxTokens:   getEnvInt("LLM_MAX_TOKENS", 2048),
 
-		// Server Configuration
-		Port:  getEnv("PORT", "8080"),
-		Debug: getEnvBool("DEBUG", false),
-
 		// Application Settings
-		MaxRetries:     getEnvInt("MAX_RETRIES", 3),
 		TimeoutSeconds: getEnvInt("TIMEOUT_SECONDS", 30),
 	}
 
@@ -70,15 +60,6 @@ func getEnvInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if intValue, err := strconv.Atoi(value); err == nil {
 			return intValue
-		}
-	}
-	return defaultValue
-}
-
-func getEnvBool(key string, defaultValue bool) bool {
-	if value := os.Getenv(key); value != "" {
-		if boolValue, err := strconv.ParseBool(value); err == nil {
-			return boolValue
 		}
 	}
 	return defaultValue

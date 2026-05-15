@@ -16,7 +16,7 @@ type CryptoTool struct {
 }
 
 // NewCryptoTool creates a new CryptoTool instance.
-func NewCryptoTool() Tool {
+func NewCryptoTool() *CryptoTool {
 	return &CryptoTool{
 		client: &http.Client{
 			Timeout: 30 * time.Second,
@@ -51,7 +51,7 @@ func (t *CryptoTool) Run(params map[string]interface{}) (string, error) {
 		vsCurrency = currency
 	}
 
-	return t.GetCryptoPrice(strings.ToLower(strings.TrimSpace(query)), vsCurrency)
+	return t.GetCryptoPrice(normalizeCryptoID(query), strings.ToLower(strings.TrimSpace(vsCurrency)))
 }
 
 // GetCryptoPrice gets the price of a cryptocurrency from CoinGecko.
@@ -104,5 +104,26 @@ func (t *CryptoTool) GetCryptoPrice(cryptoID, vsCurrency string) (string, error)
 	}
 
 	name := strings.ToUpper(cryptoID[:1]) + cryptoID[1:]
-	return fmt.Sprintf("%s price: $%.2f %s", name, price, strings.ToUpper(vsCurrency)), nil
+	return fmt.Sprintf("%s price: %.2f %s", name, price, strings.ToUpper(vsCurrency)), nil
+}
+
+func normalizeCryptoID(query string) string {
+	id := strings.ToLower(strings.TrimSpace(query))
+	aliases := map[string]string{
+		"btc":     "bitcoin",
+		"xbt":     "bitcoin",
+		"eth":     "ethereum",
+		"sol":     "solana",
+		"doge":    "dogecoin",
+		"bnb":     "binancecoin",
+		"ada":     "cardano",
+		"xrp":     "ripple",
+		"dot":     "polkadot",
+		"matic":   "matic-network",
+		"polygon": "matic-network",
+	}
+	if alias, ok := aliases[id]; ok {
+		return alias
+	}
+	return id
 }

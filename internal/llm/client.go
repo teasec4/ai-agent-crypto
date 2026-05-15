@@ -23,12 +23,19 @@ func NewClient(apiKey string, baseURL string, model string) *Client {
 }
 
 func NewClientWithOptions(apiKey string, baseURL string, model string, temperature float64, maxTokens int) *Client {
+	return NewClientWithTimeout(apiKey, baseURL, model, temperature, maxTokens, 60*time.Second)
+}
+
+func NewClientWithTimeout(apiKey string, baseURL string, model string, temperature float64, maxTokens int, timeout time.Duration) *Client {
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
 	return &Client{
 		APIKey:  apiKey,
 		BaseURL: baseURL,
 		Model:   model,
 		HTTPClient: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: timeout,
 		},
 		Temperature: temperature,
 		MaxTokens:   maxTokens,
@@ -61,14 +68,13 @@ func (c *Client) Chat(messages []Message) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBody))
 	}

@@ -3,9 +3,6 @@ package main
 import (
 	"ai-agent/internal/agent"
 	"ai-agent/internal/config"
-	"ai-agent/internal/llm"
-	"ai-agent/internal/tools"
-	"ai-agent/internal/tools/registry"
 	"bufio"
 	"fmt"
 	"log"
@@ -18,26 +15,8 @@ func main() {
 		log.Fatalf("error loading config: %v", err)
 	}
 
-	// Create tools
-	cryptoTool := tools.NewCryptoTool()
-	gitTool := tools.NewGitTool()
+	ag := agent.NewWithConfig(cfg)
 
-	// Create LLM client with config values
-	llmClient := llm.NewClientWithOptions(
-		cfg.OpenAIApiKey,
-		cfg.LLMBaseURL,
-		cfg.LLMModel,
-		cfg.LLMTemperature,
-		cfg.LLMMaxTokens,
-	)
-
-	// Create registry
-	reg := registry.New(cryptoTool, gitTool)
-
-	// Create agent
-	ag := agent.NewAgent(llmClient, reg)
-
-	// Interactive CLI
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Println("AI Agent ready. Type your request (Ctrl+C to exit):")
 

@@ -6,9 +6,6 @@ import (
 
 	"ai-agent/internal/agent"
 	"ai-agent/internal/config"
-	"ai-agent/internal/llm"
-	"ai-agent/internal/tools"
-	"ai-agent/internal/tools/registry"
 )
 
 func main() {
@@ -17,26 +14,8 @@ func main() {
 		log.Fatalf("error loading config: %v", err)
 	}
 
-	// Create LLM client with config values
-	llmClient := llm.NewClientWithOptions(
-		cfg.OpenAIApiKey,
-		cfg.LLMBaseURL,
-		cfg.LLMModel,
-		cfg.LLMTemperature,
-		cfg.LLMMaxTokens,
-	)
+	ag := agent.NewWithConfig(cfg)
 
-	// Create tools
-	cryptoTool := tools.NewCryptoTool()
-	gitTool := tools.NewGitTool()
-
-	// Create registry
-	reg := registry.New(cryptoTool, gitTool)
-
-	// Create agent
-	ag := agent.NewAgent(llmClient, reg)
-
-	// Test queries
 	queries := []string{
 		"А сколько стоит Солана?",
 		"Какая цена биткоина?",
