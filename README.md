@@ -54,16 +54,13 @@ cmd/
 
 internal/
 ├── agent/
-│   ├── agent.go         # Agent loop: Plan → Act → Finalize
-│   └── history.go       # Conversation history with LLM-based compaction
+│   └── agent.go         # Agent loop: Plan → Act → Finalize
 │
 ├── planner/
-│   ├── interface.go      # Planner interface
 │   ├── llm_planner.go   # LLM-backed planner implementation
-│   └── type.go          # PlanResult: action, params, reasoning, done
+│   └── type.go          # PlanResult: action, params, reply
 │
 ├── executor/
-│   ├── interface.go      # Executor interface
 │   └── executor.go      # ToolExecutor: resolves plan → registered tool
 │
 ├── llm/
@@ -75,9 +72,12 @@ internal/
 │   ├── interface.go      # Tool interface (Name, Description, Run)
 │   ├── crypto.go         # Cryptocurrency price (CoinGecko)
 │   ├── git.go            # Git repository context
-│   ├── help.go           # Help + Unknown fallback tools
+│   ├── help.go           # Help tool
 │   └── registry/
 │       └── registry.go   # Tool registry: register, lookup, list
+│
+├── memory/
+│   └── work_memory.go    # Conversation history with LLM-based compaction
 │
 └── config/
     └── config.go         # Env-based configuration (.env / .env.local)
@@ -97,9 +97,9 @@ internal/
 │                                                                      │
 │  Step 2: PLAN                                                        │
 │    • LLMPlanner builds a message chain:                              │
-│        [system: tool descriptions] + [history messages] + [input]    │
-│    • LLM returns JSON: { action, parameters, reasoning, done }       │
-│    • If JSON is invalid or action unknown → sets action="unknown"    │
+│        [system: tool descriptions] + [history messages]              │
+│    • LLM returns JSON: { action, parameters, reply }                 │
+│    • If no available action fits → returns action="unknown"          │
 │                                                                      │
 │  Step 3: ACT                                                         │
 │    • Executor resolves action → registered Tool                      │
@@ -168,9 +168,7 @@ All config via `.env` or environment variables:
 | `LLM_MAX_TOKENS` | `2048` | Max tokens per response |
 | `API_KEY` | — | Primary API key |
 | `OPENAI_API_KEY` | falls back to `API_KEY` | OpenAI-compat key |
-| `PORT` | `8080` | Server port |
 | `TIMEOUT_SECONDS` | `30` | HTTP client timeout |
-| `MAX_RETRIES` | `3` | Max retry count |
 
 ---
 
@@ -181,7 +179,8 @@ All config via `.env` or environment variables:
 | CryptoTool | `get_crypto_price` | Fetches crypto prices via CoinGecko |
 | GitTool | `git_context` | Git status, branch, log, diff |
 | HelpTool | `help` | Lists available tools |
-| UnknownTool | `unknown` | Fallback for unrecognised actions |
+
+`unknown` is a planner action, not a registered tool. The agent uses it to re-plan once, then returns a friendly unsupported-request message if no available action fits.
 
 ### Adding a new tool
 
@@ -195,7 +194,7 @@ func (t *MyTool) Run(params map[string]interface{}) (string, error) {
 }
 
 // 2. Register in main.go
-reg := registry.New(cryptoTool, gitTool, helpTool, unknownTool, myTool)
+reg := registry.New(cryptoTool, gitTool, helpTool, myTool)
 ```
 
 The planner automatically discovers new tools via the registry — no prompt changes needed.
@@ -232,7 +231,7 @@ Triggers at `compactAt` (10 messages). If LLM summarisation fails, falls back to
 main.go
   ├── config.Load()           → Config struct
   ├── registry.New(tools...)  → Registry
-  ├── llm.NewClientWithOptions() → LlmClient
+  ├── llm.NewClientWithTimeout() → LlmClient
   └── agent.NewAgent()        → Agent
         ├── planner.NewLLMPlanner(llmClient, registry)
         └── executor.New(registry)

@@ -10,7 +10,9 @@ import (
 const (
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
-	RoleTool      = "tool"
+	RoleSystem    = "system"
+
+	ToolObservationPrefix = "Tool observation: "
 
 	DefaultCompactAt = 10
 
@@ -56,7 +58,7 @@ func (h *WorkMemory) AddTool(content string) {
 	if content == "" {
 		return
 	}
-	h.Messages = append(h.Messages, llm.Message{Role: RoleTool, Content: content})
+	h.Messages = append(h.Messages, llm.Message{Role: RoleAssistant, Content: ToolObservationPrefix + content})
 }
 
 // CompactIfNeeded checks if the history exceeds the threshold and compacts it.
@@ -85,7 +87,7 @@ func (h *WorkMemory) CompactIfNeeded(llmClient llm.LlmClient) {
 	// Replace old messages with a single system summary
 	compacted := make([]llm.Message, 0, 1+len(recentMessages))
 	compacted = append(compacted, llm.Message{
-		Role:    "system",
+		Role:    RoleSystem,
 		Content: fmt.Sprintf("Previous conversation summary: %s", summary),
 	})
 	compacted = append(compacted, recentMessages...)

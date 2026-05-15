@@ -1,5 +1,5 @@
 // Package retry provides exponential backoff with jitter and error classification
-// for LLM API calls and tool execution.
+// for LLM API calls.
 package retry
 
 import (
@@ -18,15 +18,6 @@ type Config struct {
 	MaxAttempts int           // max attempts per operation (default: 3)
 	BaseDelay   time.Duration // initial delay between retries (default: 1s)
 	MaxDelay    time.Duration // cap on delay growth (default: 30s)
-}
-
-// DefaultConfig returns sensible defaults for LLM API retries.
-func DefaultConfig() Config {
-	return Config{
-		MaxAttempts: 3,
-		BaseDelay:   1 * time.Second,
-		MaxDelay:    30 * time.Second,
-	}
 }
 
 // IsRetryable returns true if the error is transient and worth retrying.
@@ -138,19 +129,4 @@ func Do(cfg Config, fn func() error) error {
 	}
 
 	return fmt.Errorf("all %d attempts failed: %w", cfg.MaxAttempts, lastErr)
-}
-
-// HTTPStatusCode extracts an HTTP status code from an error message.
-// Returns 0 if no status code is found.
-func HTTPStatusCode(err error) int {
-	if err == nil {
-		return 0
-	}
-	msg := err.Error()
-	// Our client formats: "API returned status %d: %s"
-	var code int
-	if n, _ := fmt.Sscanf(msg, "API returned status %d", &code); n == 1 {
-		return code
-	}
-	return 0
 }

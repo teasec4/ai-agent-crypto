@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"ai-agent/internal/config"
@@ -27,10 +28,12 @@ var retryCfg = retry.Config{
 // Each iteration includes retry-backed Plan + one tool execution.
 const maxLoopAttempts = 5
 
+const unsupportedActionReply = "Я не умею выполнить этот запрос доступными инструментами. Сейчас могу ответить напрямую, посмотреть git-контекст или получить цену криптовалюты."
+
 type Agent struct {
 	llmClient llm.LlmClient
 	planner   *planner.LLMPlanner
-	executor  executor.Executor
+	executor  *executor.ToolExecutor
 	memory    *memory.WorkMemory
 }
 
@@ -53,7 +56,6 @@ func NewWithConfig(cfg *config.Config) *Agent {
 	cryptoTool.SetAPIKey(cfg.CoinGeckoApiKey)
 	gitTool := tools.NewGitTool()
 	helpTool := tools.NewHelpTool()
-	unknownTool := tools.NewUnknownTool()
 
 	llmClient := llm.NewClientWithTimeout(
 		cfg.OpenAIApiKey,
@@ -64,7 +66,7 @@ func NewWithConfig(cfg *config.Config) *Agent {
 		time.Duration(cfg.TimeoutSeconds)*time.Second,
 	)
 
-	reg := registry.New(cryptoTool, gitTool, helpTool, unknownTool)
+	reg := registry.New(cryptoTool, gitTool, helpTool)
 	return NewAgent(llmClient, reg)
 }
 
@@ -73,11 +75,12 @@ func (a *Agent) Run(input string) string {
 	a.memory.AddUser(input)
 
 	var lastErr error
+	unknownAttempts := 0
 	for attempt := 1; attempt <= maxLoopAttempts; attempt++ {
 		// Phase 1: Plan — with retry for transient LLM errors.
 		// Retryable: network, timeout, 429, 5xx.
 		// Non-retryable: bad JSON, validation — added to history, loop retries with context.
-		planResult, err := a.plan(attempt)
+		planResult, err := a.plan()
 		if err != nil {
 			lastErr = err
 			if retry.IsFatal(err) {
@@ -90,10 +93,27 @@ func (a *Agent) Run(input string) string {
 		}
 
 		// Direct answer path: planner chose "message" action
-		if planResult.Action == "message" {
+		if planResult.Action == planner.ActionMessage {
 			a.memory.AddAssistant(planResult.Reply)
 			a.memory.CompactIfNeeded(a.llmClient)
 			return planResult.Reply
+		}
+
+		// Unknown is a planner fallback, not a real completed action.
+		// Give the planner one chance to recover, then return a user-facing fallback.
+		if planResult.Action == planner.ActionUnknown {
+			unknownAttempts++
+			result := unknownObservation(planResult.Parameters)
+			lastErr = fmt.Errorf("planner returned unknown action: %s", result)
+			a.memory.AddTool("Planner returned unknown: " + result)
+			if unknownAttempts > 1 {
+				a.memory.AddAssistant(unsupportedActionReply)
+				a.memory.CompactIfNeeded(a.llmClient)
+				return unsupportedActionReply
+			}
+
+			log.Printf("[Agent] Planner returned unknown; retrying with observation: %s", truncate(result, 200))
+			continue
 		}
 
 		// Phase 2: Act — execute the chosen tool (no retry, errors go to history)
@@ -128,13 +148,13 @@ func (a *Agent) Run(input string) string {
 }
 
 // plan wraps the planner call with exponential backoff retry for transient LLM errors.
-func (a *Agent) plan(attempt int) (planner.PlanResult, error) {
+func (a *Agent) plan() (planner.PlanResult, error) {
 	var result planner.PlanResult
 	var lastErr error
 
 	err := retry.Do(retryCfg, func() error {
 		var e error
-		result, e = a.planner.Plan("", a.memory.Messages)
+		result, e = a.planner.Plan(a.memory.Messages)
 		lastErr = e
 		return e
 	})
@@ -156,7 +176,19 @@ func (a *Agent) finalize(input, action, toolResult string) (string, error) {
 		},
 	}
 
-	return a.llmClient.Chat(messages)
+	var reply string
+	var lastErr error
+	err := retry.Do(retryCfg, func() error {
+		var e error
+		reply, e = a.llmClient.Chat(messages)
+		lastErr = e
+		return e
+	})
+	if err != nil {
+		return "", fmt.Errorf("finalize: %w", lastErr)
+	}
+
+	return reply, nil
 }
 
 func truncate(s string, maxLen int) string {
@@ -164,4 +196,11 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func unknownObservation(params map[string]interface{}) string {
+	if reason, ok := params["reason"].(string); ok && strings.TrimSpace(reason) != "" {
+		return "no available action fits: " + strings.TrimSpace(reason)
+	}
+	return "no available action fits this request"
 }

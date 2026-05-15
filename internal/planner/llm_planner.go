@@ -23,8 +23,8 @@ func NewLLMPlanner(llmClient llm.LlmClient, reg *registry.Registry) *LLMPlanner 
 }
 
 // Plan uses the LLM to determine the next action.
-func (p *LLMPlanner) Plan(input string, history []llm.Message) (PlanResult, error) {
-	messages := p.buildMessages(input, history)
+func (p *LLMPlanner) Plan(history []llm.Message) (PlanResult, error) {
+	messages := p.buildMessages(history)
 
 	response, err := p.llmClient.Chat(messages)
 	if err != nil {
@@ -42,11 +42,13 @@ func (p *LLMPlanner) Plan(input string, history []llm.Message) (PlanResult, erro
 		return PlanResult{}, fmt.Errorf("planner returned empty action")
 	}
 
-	if planResponse.Action != "message" && !p.registry.IsValid(planResponse.Action) {
+	if planResponse.Action != ActionMessage &&
+		planResponse.Action != ActionUnknown &&
+		!p.registry.IsValid(planResponse.Action) {
 		return PlanResult{}, fmt.Errorf("planner returned unknown action %q", planResponse.Action)
 	}
 
-	if planResponse.Action == "message" && strings.TrimSpace(planResponse.Reply) == "" {
+	if planResponse.Action == ActionMessage && strings.TrimSpace(planResponse.Reply) == "" {
 		return PlanResult{}, fmt.Errorf("planner returned message action without reply")
 	}
 
@@ -66,12 +68,13 @@ func cleanJSONResponse(response string) string {
 }
 
 // buildMessages constructs the LLM messages array for planning.
-func (p *LLMPlanner) buildMessages(input string, history []llm.Message) []llm.Message {
+func (p *LLMPlanner) buildMessages(history []llm.Message) []llm.Message {
 	toolList := p.registry.List()
 	systemPrompt := fmt.Sprintf(`You are a planner for an AI agent. Your job is to analyze the user's request and decide the next action.
 
 Available actions:
 - "message": answer directly without a tool
+- "unknown": use only when no available tool or direct answer fits the request
 - any registered tool listed below
 
 %s
@@ -89,14 +92,15 @@ For a direct answer:
   "action": "message",
   "reply": "your answer"
 }
+
+For an unsupported or unclear request:
+{
+  "action": "unknown",
+  "parameters": { "reason": "why no available action fits" }
+}
 `, toolList)
 
 	messages := []llm.Message{{Role: "system", Content: systemPrompt}}
 	messages = append(messages, history...)
-	// Avoid duplicate user message: if history already ends with a user message,
-	// the caller already added it — don't append another one.
-	if strings.TrimSpace(input) != "" && (len(history) == 0 || history[len(history)-1].Role != "user") {
-		messages = append(messages, llm.Message{Role: "user", Content: input})
-	}
 	return messages
 }

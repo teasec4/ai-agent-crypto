@@ -52,15 +52,6 @@ func (r *Registry) List() string {
 	return sb.String()
 }
 
-// NameList returns a slice of all registered tool names.
-func (r *Registry) NameList() []string {
-	names := make([]string, 0, len(r.tools))
-	for name := range r.tools {
-		names = append(names, name)
-	}
-	return names
-}
-
 // IsValid returns true if a tool with the given name is registered.
 func (r *Registry) IsValid(name string) bool {
 	_, ok := r.tools[name]

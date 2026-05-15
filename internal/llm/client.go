@@ -18,14 +18,6 @@ type Client struct {
 	MaxTokens   int
 }
 
-func NewClient(apiKey string, baseURL string, model string) *Client {
-	return NewClientWithOptions(apiKey, baseURL, model, 0.7, 2048)
-}
-
-func NewClientWithOptions(apiKey string, baseURL string, model string, temperature float64, maxTokens int) *Client {
-	return NewClientWithTimeout(apiKey, baseURL, model, temperature, maxTokens, 60*time.Second)
-}
-
 func NewClientWithTimeout(apiKey string, baseURL string, model string, temperature float64, maxTokens int, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 60 * time.Second

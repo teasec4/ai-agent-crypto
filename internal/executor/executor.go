@@ -13,7 +13,7 @@ type ToolExecutor struct {
 }
 
 // New creates a new ToolExecutor with the given tool registry.
-func New(reg *registry.Registry) Executor {
+func New(reg *registry.Registry) *ToolExecutor {
 	return &ToolExecutor{
 		registry: reg,
 	}
@@ -23,11 +23,7 @@ func New(reg *registry.Registry) Executor {
 func (e *ToolExecutor) Execute(plan planner.PlanResult) (string, error) {
 	tool := e.registry.Get(plan.Action)
 	if tool == nil {
-		// Fallback to unknown tool
-		tool = e.registry.Get("unknown")
-		if tool == nil {
-			return "", fmt.Errorf("no tool found for action '%s' and no 'unknown' fallback registered", plan.Action)
-		}
+		return "", fmt.Errorf("no tool found for action %q", plan.Action)
 	}
 
 	result, err := tool.Run(plan.Parameters)
