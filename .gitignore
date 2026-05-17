@@ -1,6 +1,7 @@
 .env
 .env.local
 .DS_Store
+.agent/
 
 # Build artifacts
 /main

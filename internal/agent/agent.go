@@ -28,24 +28,47 @@ var retryCfg = retry.Config{
 // Each iteration includes retry-backed Plan + one tool execution.
 const maxLoopAttempts = 5
 
-const unsupportedActionReply = "Я не умею выполнить этот запрос доступными инструментами. Сейчас могу ответить напрямую, посмотреть git-контекст или получить цену криптовалюты."
+const unsupportedActionReply = "Я не умею выполнять этот запрос доступными инструментами. Сейчас могу ответить напрямую, посмотреть git-контекст или получить цену криптовалюты."
 
 type Agent struct {
-	llmClient llm.LlmClient
-	planner   *planner.LLMPlanner
-	executor  *executor.ToolExecutor
-	memory    *memory.WorkMemory
+	llmClient          llm.LlmClient
+	planner            *planner.LLMPlanner
+	executor           *executor.ToolExecutor
+	memory             *memory.WorkMemory
+	longTermMemory     *memory.LongTermMemory
+	sessionID          string
+	memoryContextLimit int
 }
 
 func NewAgent(
 	llmClient llm.LlmClient,
 	reg *registry.Registry,
 ) *Agent {
+	return NewAgentWithMemory(llmClient, reg, nil, memory.DefaultSessionID, memory.DefaultContextLimit)
+}
+
+func NewAgentWithMemory(
+	llmClient llm.LlmClient,
+	reg *registry.Registry,
+	store memory.Store,
+	sessionID string,
+	contextLimit int,
+) *Agent {
+	if sessionID == "" {
+		sessionID = memory.DefaultSessionID
+	}
+	if contextLimit <= 0 {
+		contextLimit = memory.DefaultContextLimit
+	}
+
 	return &Agent{
-		llmClient: llmClient,
-		planner:   planner.NewLLMPlanner(llmClient, reg),
-		executor:  executor.New(reg),
-		memory:    memory.NewWorkMemory(),
+		llmClient:          llmClient,
+		planner:            planner.NewLLMPlanner(llmClient, reg),
+		executor:           executor.New(reg),
+		memory:             memory.NewWorkMemory(),
+		longTermMemory:     memory.NewLongTermMemory(store),
+		sessionID:          sessionID,
+		memoryContextLimit: contextLimit,
 	}
 }
 
@@ -67,12 +90,19 @@ func NewWithConfig(cfg *config.Config) *Agent {
 	)
 
 	reg := registry.New(cryptoTool, gitTool, helpTool)
-	return NewAgent(llmClient, reg)
+	store := memory.NewJSONStore(cfg.MemoryPath)
+	return NewAgentWithMemory(llmClient, reg, store, cfg.MemorySessionID, cfg.MemoryContextLimit)
 }
 
 func (a *Agent) Run(input string) string {
 	log.Printf("[Agent] Planning...")
+	runStarted := time.Now().UTC()
 	a.memory.AddUser(input)
+	a.remember(memory.MemoryEvent{
+		Type:    memory.EventUserMessage,
+		Content: input,
+		Tags:    inferEventTags("", input),
+	})
 
 	var lastErr error
 	unknownAttempts := 0
@@ -80,22 +110,35 @@ func (a *Agent) Run(input string) string {
 		// Phase 1: Plan — with retry for transient LLM errors.
 		// Retryable: network, timeout, 429, 5xx.
 		// Non-retryable: bad JSON, validation — added to history, loop retries with context.
-		planResult, err := a.plan()
+		planResult, err := a.plan(runStarted, input)
 		if err != nil {
 			lastErr = err
 			if retry.IsFatal(err) {
+				a.remember(memory.MemoryEvent{
+					Type:  memory.EventPlanError,
+					Error: err.Error(),
+					Tags:  []string{"planner"},
+				})
 				return fmt.Sprintf("Ошибка: %v", err)
 			}
 			// Feed error back into history so the planner can adapt on next iteration
 			a.memory.AddTool(fmt.Sprintf("Plan attempt %d failed: %v", attempt, err))
+			a.remember(memory.MemoryEvent{
+				Type:  memory.EventPlanError,
+				Error: err.Error(),
+				Tags:  []string{"planner"},
+			})
 			log.Printf("[Agent] Plan attempt %d/%d failed (retryable): %v", attempt, maxLoopAttempts, err)
 			continue
 		}
+
+		a.rememberPlan(planResult)
 
 		// Direct answer path: planner chose "message" action
 		if planResult.Action == planner.ActionMessage {
 			a.memory.AddAssistant(planResult.Reply)
 			a.memory.CompactIfNeeded(a.llmClient)
+			a.rememberAssistant(planResult.Reply)
 			return planResult.Reply
 		}
 
@@ -109,6 +152,7 @@ func (a *Agent) Run(input string) string {
 			if unknownAttempts > 1 {
 				a.memory.AddAssistant(unsupportedActionReply)
 				a.memory.CompactIfNeeded(a.llmClient)
+				a.rememberAssistant(unsupportedActionReply)
 				return unsupportedActionReply
 			}
 
@@ -122,12 +166,26 @@ func (a *Agent) Run(input string) string {
 		if toolErr != nil {
 			lastErr = toolErr
 			a.memory.AddTool(fmt.Sprintf("Tool %s failed: %v", planResult.Action, toolErr))
+			a.remember(memory.MemoryEvent{
+				Type:   memory.EventToolError,
+				Action: planResult.Action,
+				Params: planResult.Parameters,
+				Error:  toolErr.Error(),
+				Tags:   inferEventTags(planResult.Action, toolErr.Error()),
+			})
 			log.Printf("[Agent] Tool error: %v", toolErr)
 			continue
 		}
 
 		log.Printf("[Agent] Tool result: %s", truncate(result, 200))
 		a.memory.AddTool(fmt.Sprintf("Tool %s result: %s", planResult.Action, result))
+		a.remember(memory.MemoryEvent{
+			Type:   memory.EventToolResult,
+			Action: planResult.Action,
+			Params: planResult.Parameters,
+			Result: result,
+			Tags:   inferEventTags(planResult.Action, result),
+		})
 
 		// Phase 3: Format — turn raw tool output into natural language
 		finalReply, formatErr := a.finalize(input, planResult.Action, result)
@@ -138,6 +196,7 @@ func (a *Agent) Run(input string) string {
 
 		a.memory.AddAssistant(finalReply)
 		a.memory.CompactIfNeeded(a.llmClient)
+		a.rememberAssistant(finalReply)
 		return finalReply
 	}
 
@@ -148,13 +207,13 @@ func (a *Agent) Run(input string) string {
 }
 
 // plan wraps the planner call with exponential backoff retry for transient LLM errors.
-func (a *Agent) plan() (planner.PlanResult, error) {
+func (a *Agent) plan(before time.Time, input string) (planner.PlanResult, error) {
 	var result planner.PlanResult
 	var lastErr error
 
 	err := retry.Do(retryCfg, func() error {
 		var e error
-		result, e = a.planner.Plan(a.memory.Messages)
+		result, e = a.planner.Plan(a.planningMessages(before, input))
 		lastErr = e
 		return e
 	})
@@ -162,6 +221,31 @@ func (a *Agent) plan() (planner.PlanResult, error) {
 		return planner.PlanResult{}, fmt.Errorf("plan: %w", lastErr)
 	}
 	return result, nil
+}
+
+func (a *Agent) planningMessages(before time.Time, input string) []llm.Message {
+	if a.longTermMemory == nil {
+		return a.memory.Messages
+	}
+
+	context, err := a.longTermMemory.BuildContext(memory.ContextRequest{
+		SessionID: a.sessionID,
+		Input:     input,
+		Limit:     a.memoryContextLimit,
+		Before:    before,
+	})
+	if err != nil {
+		log.Printf("[Agent] Memory context unavailable: %v", err)
+		return a.memory.Messages
+	}
+	if len(context) == 0 {
+		return a.memory.Messages
+	}
+
+	messages := make([]llm.Message, 0, len(context)+len(a.memory.Messages))
+	messages = append(messages, context...)
+	messages = append(messages, a.memory.Messages...)
+	return messages
 }
 
 func (a *Agent) finalize(input, action, toolResult string) (string, error) {

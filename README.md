@@ -54,7 +54,8 @@ cmd/
 
 internal/
 ├── agent/
-│   └── agent.go         # Agent loop: Plan → Act → Finalize
+│   ├── agent.go         # Agent loop: Plan → Act → Finalize
+│   └── memory.go        # Writes structured long-term memory events
 │
 ├── planner/
 │   ├── llm_planner.go   # LLM-backed planner implementation
@@ -77,7 +78,11 @@ internal/
 │       └── registry.go   # Tool registry: register, lookup, list
 │
 ├── memory/
-│   └── work_memory.go    # Conversation history with LLM-based compaction
+│   ├── work_memory.go    # Short-term conversation history + compaction
+│   ├── store.go          # Structured memory event types + Store interface
+│   ├── long_term_memory.go # Read/write facade for long-term memory
+│   ├── json_store.go     # JSONL append-only long-term memory
+│   └── context_builder.go # Selects long-term memory for planner context
 │
 └── config/
     └── config.go         # Env-based configuration (.env / .env.local)
@@ -169,6 +174,9 @@ All config via `.env` or environment variables:
 | `API_KEY` | — | Primary API key |
 | `OPENAI_API_KEY` | falls back to `API_KEY` | OpenAI-compat key |
 | `TIMEOUT_SECONDS` | `30` | HTTP client timeout |
+| `MEMORY_PATH` | `.agent/memory/events.jsonl` | JSONL long-term memory path |
+| `MEMORY_SESSION_ID` | `default` | Memory session namespace |
+| `MEMORY_CONTEXT_LIMIT` | `8` | Recent memory events to inject into planner context |
 
 ---
 
@@ -222,6 +230,20 @@ Long conversations are automatically compressed to save tokens:
 ```
 
 Triggers at `compactAt` (10 messages). If LLM summarisation fails, falls back to keeping the last N/2 messages.
+
+---
+
+## Structured Memory
+
+The agent keeps short-term working memory in-process and writes long-term structured events to JSONL:
+
+```text
+.agent/memory/events.jsonl
+```
+
+Each event records a type, session, timestamp, optional action/params/result/error, and tags. `LongTermMemory` hides the JSONL store and context builder behind one read/write facade. It reads recent events from previous runs and injects a compact `system` message before planning. The current run is filtered out by timestamp, so the active user request is not duplicated in long-term context.
+
+The `.agent/` directory is ignored by git because it can contain local user data.
 
 ---
 
