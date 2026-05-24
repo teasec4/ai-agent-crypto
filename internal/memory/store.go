@@ -3,7 +3,7 @@ package memory
 import "time"
 
 const (
-	DefaultMemoryPath    = ".agent/memory/events.jsonl"
+	DefaultMemoryPath    = "memory/events.json"
 	DefaultSessionID     = "default"
 	DefaultContextLimit  = 8
 	DefaultTaggedLimit   = 3

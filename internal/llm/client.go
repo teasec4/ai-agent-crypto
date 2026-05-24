@@ -10,12 +10,8 @@ import (
 )
 
 type Client struct {
-	APIKey      string
-	BaseURL     string
-	Model       string
+	Model Model
 	HTTPClient  *http.Client
-	Temperature float64
-	MaxTokens   int
 }
 
 func NewClientWithTimeout(apiKey string, baseURL string, model string, temperature float64, maxTokens int, timeout time.Duration) *Client {
@@ -23,23 +19,17 @@ func NewClientWithTimeout(apiKey string, baseURL string, model string, temperatu
 		timeout = 60 * time.Second
 	}
 	return &Client{
-		APIKey:  apiKey,
-		BaseURL: baseURL,
-		Model:   model,
+		Model: *NewModel(baseURL,apiKey,model),
 		HTTPClient: &http.Client{
 			Timeout: timeout,
 		},
-		Temperature: temperature,
-		MaxTokens:   maxTokens,
 	}
 }
 
 func (c *Client) Chat(messages []Message) (string, error) {
 	reqBody := Request{
-		Model:       c.Model,
+		Model:       c.Model.Model,
 		Messages:    messages,
-		Temperature: c.Temperature,
-		MaxTokens:   c.MaxTokens,
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -49,14 +39,14 @@ func (c *Client) Chat(messages []Message) (string, error) {
 
 	req, err := http.NewRequest(
 		"POST",
-		c.BaseURL,
+		c.Model.BaseURL,
 		bytes.NewBuffer(body),
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("Authorization", "Bearer "+c.Model.ApiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 

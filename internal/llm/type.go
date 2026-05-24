@@ -9,8 +9,6 @@ type Message struct {
 type Request struct {
 	Model       string    `json:"model"`
 	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature,omitempty"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
 }
 
 // Choice represents a single completion choice returned by the API.
