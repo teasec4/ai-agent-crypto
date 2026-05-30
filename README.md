@@ -1,278 +1,208 @@
-# AI Agent 🤖
+# AI Agent
 
-![Go Version](https://img.shields.io/badge/Go-1.26-blue?logo=go)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-![Status](https://img.shields.io/badge/Status-Active-brightgreen)
-![Architecture](https://img.shields.io/badge/Architecture-Plan--Execute--Finalize-orange)
+A small Go playground for building an LLM agent with explicit layers:
 
-A modular, extensible AI agent written in Go. The agent uses an LLM (any OpenAI-compatible API) to plan actions, executes registered tools, and returns a natural-language response — all in a single loop iteration without wasted LLM calls.
+```text
+cmd/cli -> harness -> loop -> planner -> executor -> tools
+                         |
+                         -> work memory + guardrails
+```
+
+The current goal is to keep the architecture understandable while experimenting with agent loops, validation, and tool execution.
 
 ---
 
-## How It Works
+## Current Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         AGENT LOOP                              │
-│                                                                 │
-│  ┌────────┐    ┌──────────┐    ┌─────────┐    ┌──────────────┐ │
-│  │  User  │    │  LLM     │    │ Tool    │    │  format       │ │
-│  │ Input  │───▶│ Planner  │───▶│Executor │───▶│  Response     │ │
-│  └────────┘    └────┬─────┘    └────┬────┘    └──────┬───────┘ │
-│                     │               │                 │         │
-│                     │         ┌─────▼──────┐          │         │
-│                     │         │ Real tool  │          │         │
-│                     │         │ succeeded? │          │         │
-│                     │         │            │          │         │
-│                     │         │  ┌───┐     │          │         │
-│                     │         │  │YES│─────┼──────────┘         │
-│                     │         │  └───┘     │                    │
-│                     │         │            │                    │
-│                     │         │  ┌───┐     │                    │
-│                     │         │  │NO │──┐  │                    │
-│                     │         │  └───┘  │  │                    │
-│                     │         └─────────┘  │                    │
-│                     │               ▲      │                    │
-│                     │               │      │                    │
-│                     │         ┌─────┴──────▼──┐                 │
-│                     │         │  Retry with   │                 │
-│                     │◄────────┤  next plan    │                 │
-│                     │         └───────────────┘                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**Key insight:** Once a real tool executes successfully, the agent immediately formats the response — no redundant LLM call needed. Only "unknown" fallbacks or tool errors trigger a re-plan.
-
----
-
-## Architecture
-
-```
+```text
 cmd/
 └── cli/
-    └── main.go          # Entry point: wires everything together
+    └── main.go              # Interactive CLI. Creates one Harness and reuses it.
 
 internal/
-├── agent/
-│   ├── agent.go         # Agent loop: Plan → Act → Finalize
-│   └── memory.go        # Writes structured long-term memory events
+├── harness/
+│   └── harness.go           # Wiring layer: LLM client, tools, planner, executor, guardrails.
+│
+├── loop/
+│   ├── loop.go              # Runtime loop: guardrail -> plan -> act/answer.
+│   └── type.go              # LoopRequest, LoopResult, trace types.
+│
+├── guardrails/
+│   └── guardrails.go        # Validation checks such as max iterations/messages.
 │
 ├── planner/
-│   ├── llm_planner.go   # LLM-backed planner implementation
-│   └── type.go          # PlanResult: action, params, reply
+│   ├── llm_planner.go       # LLM-backed planner. Returns JSON PlanResult.
+│   └── type.go              # Actions: message, unknown, or tool name.
 │
 ├── executor/
-│   └── executor.go      # ToolExecutor: resolves plan → registered tool
-│
-├── llm/
-│   ├── interface.go      # LlmClient interface
-│   ├── client.go         # HTTP client for OpenAI-compatible APIs
-│   └── type.go           # Message, Request, Response types
+│   └── executor.go          # Resolves plan action to a registered tool.
 │
 ├── tools/
-│   ├── interface.go      # Tool interface (Name, Description, Run)
-│   ├── crypto.go         # Cryptocurrency price (CoinGecko)
-│   ├── git.go            # Git repository context
-│   ├── help.go           # Help tool
+│   ├── interface.go         # Tool interface.
+│   ├── crypto.go            # CoinGecko crypto price tool.
+│   ├── git.go               # Local git context tool.
+│   ├── help.go              # Help tool.
 │   └── registry/
-│       └── registry.go   # Tool registry: register, lookup, list
+│       └── registry.go      # Tool registry used by planner and executor.
 │
 ├── memory/
-│   ├── work_memory.go    # Short-term conversation history + compaction
-│   ├── store.go          # Structured memory event types + Store interface
-│   ├── long_term_memory.go # Read/write facade for long-term memory
-│   ├── json_store.go     # JSONL append-only long-term memory
-│   └── context_builder.go # Selects long-term memory for planner context
+│   └── work_memory.go       # Short-term message history and compaction.
 │
-└── config/
-    └── config.go         # Env-based configuration (.env / .env.local)
+├── llm/
+│   ├── client.go            # OpenAI-compatible HTTP client.
+│   ├── model.go             # Model endpoint/key/name config.
+│   ├── interface.go         # LlmClient interface.
+│   └── type.go              # Chat request/response DTOs.
+│
+├── config/
+│   └── config.go            # Env-based config loader.
+│
+└── agent/
+    └── agent.go             # Thin compatibility facade over Harness.
 ```
 
 ---
 
-## Agent Loop in Detail
+## Runtime Flow
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        ITERATION FLOW                                │
-│                                                                      │
-│  Step 1: COMPACT ?                                                   │
-│    • If history exceeds compactAt (10), summarise old messages via   │
-│      LLM into a single context message. Fallback: trim oldest.       │
-│                                                                      │
-│  Step 2: PLAN                                                        │
-│    • LLMPlanner builds a message chain:                              │
-│        [system: tool descriptions] + [history messages]              │
-│    • LLM returns JSON: { action, parameters, reply }                 │
-│    • If no available action fits → returns action="unknown"          │
-│                                                                      │
-│  Step 3: ACT                                                         │
-│    • Executor resolves action → registered Tool                      │
-│    • Tool.Run(params) returns (string, error)                        │
-│                                                                      │
-│  Step 4: DECIDE (this is the critical part)                          │
-│                                                                      │
-│    ┌──────────── Result ────────────┐                                │
-│    │                                │                                │
-│    ▼                                ▼                                │
-│  Success + real tool            Error / "unknown"                    │
-│  (not "unknown")                                                     │
-│    │                                │                                │
-│    │                                ▼                                │
-│    │                          Save result to history                 │
-│    │                          (planner retries next iter)            │
-│    │                                │                                │
-│    ▼                                │                                │
-│  formatResponse():                  │                                │
-│    [system] + [user: original       │                                │
-│     input + tool result]            │                                │
-│    → LLM formats natural reply   ◄──┘ (loops back to Step 2)        │
-│                                                                      │
-│  Step 5: RETURN final answer to user                                 │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
+`cmd/cli` creates the harness once:
+
+```go
+cfg, _ := config.Load()
+h := harness.New(cfg)
 ```
 
-### Why no re-plan on success?
+For every user input it calls:
 
-Older agent architectures call the LLM again after every tool result to check "are we done?" — wasting tokens and creating a failure point. This agent uses a **Plan-Execute-Finalize** pattern:
+```go
+result := h.Run(input)
+fmt.Println(result.LoopResult.Answer)
+```
 
-| Step | Who | What |
-|------|-----|------|
-| Plan | LLM | Decide which tool to call, with what params |
-| Execute | Tool | Run the actual tool logic |
-| Finalize | LLM | One-shot formatting of result into natural language |
+Inside one run:
 
-No double LLM call for the same tool result.
+```text
+1. Harness creates a fresh WorkMemory for the task.
+2. WorkMemory adds:
+   - default system prompt
+   - user task
+3. Loop checks guardrails.
+4. Planner asks the LLM for a JSON plan:
+   - action="message"  -> return answer
+   - action="unknown"  -> return unsupported-action answer
+   - action="<tool>"   -> executor runs a registered tool
+5. Tool result/error is appended to WorkMemory.
+6. Loop repeats until answer, guardrail stop, or error.
+```
+
+The trace is returned in `LoopResult.Trace`, so the caller can inspect what happened.
 
 ---
 
-## Quick Start
+## Why Harness Exists
 
-```bash
-# Clone and enter
-git clone <repo> && cd ai-agent
+`Harness` owns infrastructure and wiring:
 
-# Configure
-cp .env.example .env   # or edit .env
-# Set LLM_BASE_URL, LLM_MODEL, API_KEY
-
-# Run
-go run ./cmd/cli
+```text
+LLM client
+tool registry
+planner
+executor
+guardrails
 ```
 
-### Configuration
+This keeps `loop` simple. The loop does not know about env vars, API keys, or tool construction. It only receives a `LoopRequest` with ready-to-use dependencies.
 
-All config via `.env` or environment variables:
+Important: create `Harness` once and reuse it. Do not recreate it for every input.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_BASE_URL` | `https://api.deepseek.com/v1/chat/completions` | OpenAI-compatible API endpoint |
-| `LLM_MODEL` | `deepseek-chat` | Model name |
-| `LLM_TEMPERATURE` | `0.7` | LLM temperature |
-| `LLM_MAX_TOKENS` | `2048` | Max tokens per response |
-| `API_KEY` | — | Primary API key |
-| `OPENAI_API_KEY` | falls back to `API_KEY` | OpenAI-compat key |
-| `TIMEOUT_SECONDS` | `30` | HTTP client timeout |
-| `MEMORY_PATH` | `.agent/memory/events.jsonl` | JSONL long-term memory path |
-| `MEMORY_SESSION_ID` | `default` | Memory session namespace |
-| `MEMORY_CONTEXT_LIMIT` | `8` | Recent memory events to inject into planner context |
+---
+
+## Guardrails
+
+Guardrails validate the loop before each planning step.
+
+Current checks:
+
+```text
+MaxIterations(5)
+MaxMessages(50)
+```
+
+They are combined in `harness.New`:
+
+```go
+guardrails.CombineGuardrails(
+    guardrails.MaxIterations(loop.DefaultMaxIterations),
+    guardrails.MaxMessages(loop.DefaultMaxMessages),
+)
+```
 
 ---
 
 ## Tools
 
-| Tool | Name | What it does |
-|------|------|-------------|
-| CryptoTool | `get_crypto_price` | Fetches crypto prices via CoinGecko |
-| GitTool | `git_context` | Git status, branch, log, diff |
-| HelpTool | `help` | Lists available tools |
+Registered tools:
 
-`unknown` is a planner action, not a registered tool. The agent uses it to re-plan once, then returns a friendly unsupported-request message if no available action fits.
+| Tool | Action | Purpose |
+|------|--------|---------|
+| CryptoTool | `get_crypto_price` | Fetch crypto price via CoinGecko |
+| GitTool | `git_context` | Read local git branch/status/log/diff |
+| HelpTool | `help` | Explain available capabilities |
 
-### Adding a new tool
+`unknown` is not a tool. It is a planner action used when no available tool or direct answer fits.
 
-```go
-// 1. Implement the Tool interface
-type MyTool struct{}
-func (t *MyTool) Name() string        { return "my_tool" }
-func (t *MyTool) Description() string { return "What my tool does" }
-func (t *MyTool) Run(params map[string]interface{}) (string, error) {
-    // your logic here
-}
+To add a tool:
 
-// 2. Register in main.go
-reg := registry.New(cryptoTool, gitTool, helpTool, myTool)
-```
-
-The planner automatically discovers new tools via the registry — no prompt changes needed.
+1. Implement `tools.Tool`.
+2. Register it in `harness.New`.
+3. Its description becomes visible to the planner through the registry.
 
 ---
 
-## History Compaction
+## Configuration
 
-Long conversations are automatically compressed to save tokens:
+Config is loaded from `.env`, `.env.local`, or environment variables.
 
-```
-┌────────────────────────────────────────────────────────┐
-│  Before compaction (12 messages)                       │
-│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌───  │
-│  │ msg1 │ │ msg2 │ │ msg3 │ │ msg4 │ │ msg5 │ │ ... │
-│  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └───  │
-│         │                                   │         │
-│         ▼  LLM summarises into               ▼ kept   │
-│         │                                   │         │
-│  ┌──────────────────────┐ ┌──────┐ ┌──────┐ ┌───     │
-│  │ [summary context]    │ │ msg9 │ │ msg10│ │ ...     │
-│  └──────────────────────┘ └──────┘ └──────┘ └───     │
-│                        After compaction                 │
-└────────────────────────────────────────────────────────┘
-```
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_BASE_URL` | `https://api.deepseek.com/v1/chat/completions` | OpenAI-compatible chat completions endpoint |
+| `LLM_MODEL` | `deepseek-chat` | Model name |
+| `LLM_TEMPERATURE` | `0.7` | Reserved config value |
+| `LLM_MAX_TOKENS` | `2048` | Reserved config value |
+| `API_KEY` | empty | Primary API key fallback |
+| `OPENAI_API_KEY` | `API_KEY` | LLM API key |
+| `COINGECKO_API_KEY` | empty | Optional CoinGecko API key |
+| `TIMEOUT_SECONDS` | `30` | HTTP client timeout |
 
-Triggers at `compactAt` (10 messages). If LLM summarisation fails, falls back to keeping the last N/2 messages.
+Note: `LLM_TEMPERATURE` and `LLM_MAX_TOKENS` are still in config, but the current `llm.Request` no longer sends them.
 
 ---
 
-## Structured Memory
-
-The agent keeps short-term working memory in-process and writes long-term structured events to JSONL:
-
-```text
-.agent/memory/events.jsonl
-```
-
-Each event records a type, session, timestamp, optional action/params/result/error, and tags. `LongTermMemory` hides the JSONL store and context builder behind one read/write facade. It reads recent events from previous runs and injects a compact `system` message before planning. The current run is filtered out by timestamp, so the active user request is not duplicated in long-term context.
-
-The `.agent/` directory is ignored by git because it can contain local user data.
-
----
-
-## Dependency Graph
-
-```
-main.go
-  ├── config.Load()           → Config struct
-  ├── registry.New(tools...)  → Registry
-  ├── llm.NewClientWithTimeout() → LlmClient
-  └── agent.NewAgent()        → Agent
-        ├── planner.NewLLMPlanner(llmClient, registry)
-        └── executor.New(registry)
-              └── registry.Get(name) → Tool.Run(params)
-```
-
----
-
-## Development
+## Run
 
 ```bash
-go build ./...     # Build all packages
-go vet ./...       # Static analysis
-go run ./cmd/cli   # Run interactive CLI
-go run ./cmd/test_llm  # LLM connectivity test
+go run ./cmd/cli
+```
+
+Development checks:
+
+```bash
+go test ./...
+go vet ./...
 ```
 
 ---
 
-## License
+## Current Direction
 
-MIT
+The project is intentionally in a simpler phase now:
+
+```text
+short-term memory only
+harness-owned dependencies
+loop-owned iteration
+guardrails before planning
+native Go tools
+```
+
+Long-term memory, MCP adapters, sessions, and evals can be added later once this core loop feels boring and obvious.
