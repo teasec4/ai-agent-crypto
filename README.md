@@ -17,7 +17,7 @@ The current goal is to keep the architecture understandable while experimenting 
 ```text
 cmd/
 └── cli/
-    └── main.go              # Interactive CLI. Creates one Harness and reuses it.
+    └── main.go              # Interactive CLI. Creates one Harness and one Session.
 
 internal/
 ├── harness/
@@ -56,46 +56,51 @@ internal/
 │
 ├── config/
 │   └── config.go            # Env-based config loader.
-│
-└── agent/
-    └── agent.go             # Thin compatibility facade over Harness.
 ```
 
 ---
 
 ## Runtime Flow
 
-`cmd/cli` creates the harness once:
+`cmd/cli` creates the harness once, then creates one chat session:
 
 ```go
 cfg, _ := config.Load()
 h := harness.New(cfg)
+session := h.NewSession()
 ```
 
 For every user input it calls:
 
 ```go
-result := h.Run(input)
+result := session.Run(input)
 fmt.Println(result.LoopResult.Answer)
 ```
 
-Inside one run:
+Inside one session:
 
 ```text
-1. Harness creates a fresh WorkMemory for the task.
-2. WorkMemory adds:
+1. Harness owns reusable dependencies.
+2. Session owns WorkMemory.
+3. Session starts with:
    - default system prompt
-   - user task
-3. Loop checks guardrails.
-4. Planner asks the LLM for a JSON plan:
+4. Every user input is appended to the same WorkMemory.
+5. Loop checks guardrails.
+6. Planner asks the LLM for a JSON plan:
    - action="message"  -> return answer
    - action="unknown"  -> return unsupported-action answer
    - action="<tool>"   -> executor runs a registered tool
-5. Tool result/error is appended to WorkMemory.
-6. Loop repeats until answer, guardrail stop, or error.
+7. Tool result/error or final answer is appended to WorkMemory.
+8. Loop repeats until answer, guardrail stop, or error.
 ```
 
 The trace is returned in `LoopResult.Trace`, so the caller can inspect what happened.
+
+Tool results are stored as regular `user` messages with the `Tool observation:` prefix instead of `role="tool"`. This keeps the history compatible with OpenAI-style Chat Completions APIs that require `tool_call_id` for native tool messages.
+
+If the model returns a plain text answer immediately after a tool observation instead of planner JSON, the planner accepts it as the final answer for that turn. This is a defensive fallback for models that occasionally finalize after seeing tool output.
+
+`Harness.Run(task)` still exists as a one-shot helper. It creates a fresh session internally, runs one task, and discards the memory. Interactive code should prefer `NewSession`.
 
 ---
 
@@ -113,7 +118,27 @@ guardrails
 
 This keeps `loop` simple. The loop does not know about env vars, API keys, or tool construction. It only receives a `LoopRequest` with ready-to-use dependencies.
 
-Important: create `Harness` once and reuse it. Do not recreate it for every input.
+Important: create `Harness` once and reuse it. For chat-like behavior, create `Session` once and call `session.Run(input)` for every user message.
+
+## Why Session Exists
+
+`Session` owns conversation state:
+
+```text
+WorkMemory
+```
+
+This keeps the harness reusable and keeps the loop stateless from the caller's point of view.
+
+In the CLI:
+
+```text
+Harness = process-level dependencies
+Session = current conversation
+Run     = one user turn inside that conversation
+```
+
+The `/reset` command clears the current session memory and keeps the same harness.
 
 ---
 
@@ -200,6 +225,7 @@ The project is intentionally in a simpler phase now:
 ```text
 short-term memory only
 harness-owned dependencies
+session-owned conversation state
 loop-owned iteration
 guardrails before planning
 native Go tools

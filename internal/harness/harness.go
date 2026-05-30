@@ -25,13 +25,16 @@ type HarnessExecutionResult struct {
 	Task       string
 }
 
+type Session struct {
+	harness *Harness
+	memory  *memory.WorkMemory
+}
+
 func New(cfg *config.Config) *Harness {
 	cryptoTool := tools.NewCryptoTool()
-	cryptoTool.SetAPIKey(cfg.CoinGeckoApiKey)
-	gitTool := tools.NewGitTool()
-	helpTool := tools.NewHelpTool()
 
-	reg := registry.New(cryptoTool, gitTool, helpTool)
+
+	reg := registry.New(cryptoTool)
 
 	llmClient := llm.NewClientWithTimeout(
 		cfg.OpenAIApiKey,
@@ -53,20 +56,34 @@ func New(cfg *config.Config) *Harness {
 	}
 }
 
+func (h *Harness) NewSession() *Session {
+	return &Session{
+		harness: h,
+		memory:  memory.NewDefaultWorkMemory(),
+	}
+}
+
 func (h *Harness) Run(task string) HarnessExecutionResult {
-	workingMemory := memory.NewWorkMemory()
-	workingMemory.CreateContext(task)
+	return h.NewSession().Run(task)
+}
+
+func (s *Session) Run(task string) HarnessExecutionResult {
+	s.memory.AddUser(task)
 
 	result := loop.RunLoop(loop.LoopRequest{
-		Memory:    workingMemory,
-		Guardrail: h.guardrail,
-		Planner:   h.planner,
-		Executor:  h.executor,
-		LLMClient: h.llmClient,
+		Memory:    s.memory,
+		Guardrail: s.harness.guardrail,
+		Planner:   s.harness.planner,
+		Executor:  s.harness.executor,
+		LLMClient: s.harness.llmClient,
 	})
 
 	return HarnessExecutionResult{
 		LoopResult: result,
 		Task:       task,
 	}
+}
+
+func (s *Session) Reset() {
+	s.memory.Reset()
 }

@@ -66,6 +66,7 @@ func RunLoop(req LoopRequest) LoopResult {
 		case planner.ActionUnknown:
 			answer := unsupportedActionReply(planResult)
 			req.Memory.AddAssistant(answer)
+			req.Memory.CompactIfNeeded(req.LLMClient)
 			trace = append(trace, LoopIteration{
 				Index:       iterationIndex,
 				Outcome:     OutcomeAnswer,

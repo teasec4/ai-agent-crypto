@@ -12,6 +12,8 @@ const (
 	RoleAssistant = "assistant"
 	RoleSystem    = "system"
 
+	ToolObservationPrefix = "Tool observation: "
+
 	SystemDefaultPrompt = `
 You are a helpful assistant with access to tools.
 Use tools whenever they help you give a more accurate answer.
@@ -48,10 +50,13 @@ func NewWorkMemory() *WorkMemory {
 	return &WorkMemory{Messages: make([]llm.Message, 0)}
 }
 
-func (h *WorkMemory) CreateContext(content string) {
-	// default system role
-	h.Messages = append(h.Messages, llm.Message{Role: RoleSystem, Content: SystemDefaultPrompt})
-	h.AddUser(content)
+func NewDefaultWorkMemory() *WorkMemory {
+	return &WorkMemory{Messages: []llm.Message{defaultSystemMessage()}}
+}
+
+func (h *WorkMemory) Reset() {
+	h.Messages = h.Messages[:0]
+	h.Messages = append(h.Messages, defaultSystemMessage())
 }
 
 func (h *WorkMemory) AddUser(content string) {
@@ -69,7 +74,7 @@ func (h *WorkMemory) AddTool(content string) {
 	if content == "" {
 		return
 	}
-	h.Messages = append(h.Messages, llm.Message{Role: RoleAssistant, Content: "Tool observation: " + content})
+	h.Messages = append(h.Messages, llm.Message{Role: RoleUser, Content: ToolObservationPrefix + content})
 }
 
 // CompactIfNeeded checks if the history exceeds the threshold and compacts it.
@@ -91,18 +96,16 @@ func (h *WorkMemory) CompactIfNeeded(llmClient llm.LlmClient) {
 	summary, err := h.summarize(llmClient, oldMessages)
 	if err != nil {
 		// Fallback: simple trim keeping only recent messages
-		h.Messages = recentMessages
+		h.Messages = prependDefaultSystem(recentMessages)
 		return
 	}
 
 	// Replace old messages with a single system summary
-	compacted := make([]llm.Message, 0, 1+len(recentMessages))
-	compacted = append(compacted, llm.Message{
+	summaryMessage := llm.Message{
 		Role:    RoleSystem,
 		Content: fmt.Sprintf("Previous conversation summary: %s", summary),
-	})
-	compacted = append(compacted, recentMessages...)
-	h.Messages = compacted
+	}
+	h.Messages = prependDefaultSystem(append([]llm.Message{summaryMessage}, recentMessages...))
 }
 
 // summarize sends old messages to the LLM for condensation.
@@ -122,4 +125,20 @@ func (h *WorkMemory) summarize(llmClient llm.LlmClient, messages []llm.Message) 
 
 func (h *WorkMemory) Len() int {
 	return len(h.Messages)
+}
+
+func prependDefaultSystem(messages []llm.Message) []llm.Message {
+	result := make([]llm.Message, 0, 1+len(messages))
+	result = append(result, defaultSystemMessage())
+	for _, msg := range messages {
+		if msg.Role == RoleSystem && msg.Content == SystemDefaultPrompt {
+			continue
+		}
+		result = append(result, msg)
+	}
+	return result
+}
+
+func defaultSystemMessage() llm.Message {
+	return llm.Message{Role: RoleSystem, Content: SystemDefaultPrompt}
 }

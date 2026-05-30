@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 )
 
 func main() {
@@ -15,17 +16,24 @@ func main() {
 		log.Fatalf("error loading config: %v", err)
 	}
 	h := harness.New(cfg)
+	session := h.NewSession()
 
 	scanner := bufio.NewScanner(os.Stdin)
-	fmt.Println("AI Agent ready. Type your request (Ctrl+C to exit):")
+	fmt.Println("AI Agent ready. Type your request (/reset to clear context, Ctrl+C to exit):")
 
 	for scanner.Scan() {
-		input := scanner.Text()
+		input := strings.TrimSpace(scanner.Text())
 		if input == "" {
 			continue
 		}
+		if input == "/reset" {
+			session.Reset()
+			fmt.Print("Agent: context reset.\n\n")
+			continue
+		}
+
 		log.Println("user input:", input)
-		result := h.Run(input)
+		result := session.Run(input)
 		fmt.Printf("Agent: %s\n\n", result.LoopResult.Answer)
 	}
 
