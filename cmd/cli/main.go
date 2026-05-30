@@ -1,8 +1,8 @@
 package main
 
 import (
-	"ai-agent/internal/agent"
 	"ai-agent/internal/config"
+	"ai-agent/internal/harness"
 	"bufio"
 	"fmt"
 	"log"
@@ -14,8 +14,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("error loading config: %v", err)
 	}
-
-	ag := agent.NewWithConfig(cfg)
+	h := harness.New(cfg)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Println("AI Agent ready. Type your request (Ctrl+C to exit):")
@@ -26,8 +25,8 @@ func main() {
 			continue
 		}
 		log.Println("user input:", input)
-		output := ag.Run(input)
-		fmt.Printf("Agent: %s\n\n", output)
+		result := h.Run(input)
+		fmt.Printf("Agent: %s\n\n", result.LoopResult.Answer)
 	}
 
 	if err := scanner.Err(); err != nil {

@@ -1,3 +1,0 @@
-package agent
-
-type Agent 

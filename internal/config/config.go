@@ -4,8 +4,6 @@ import (
 	"os"
 	"strconv"
 
-	"ai-agent/internal/memory"
-
 	"github.com/joho/godotenv"
 )
 
@@ -23,11 +21,6 @@ type Config struct {
 
 	// Application Settings
 	TimeoutSeconds int
-
-	// Memory Settings
-	MemoryPath         string
-	MemorySessionID    string
-	MemoryContextLimit int
 }
 
 // Load loads configuration from .env file and environment variables
@@ -50,11 +43,6 @@ func Load() (*Config, error) {
 
 		// Application Settings
 		TimeoutSeconds: getEnvInt("TIMEOUT_SECONDS", 30),
-
-		// Memory Settings
-		MemoryPath:         getEnv("MEMORY_PATH", memory.DefaultMemoryPath),
-		MemorySessionID:    getEnv("MEMORY_SESSION_ID", memory.DefaultSessionID),
-		MemoryContextLimit: getEnvInt("MEMORY_CONTEXT_LIMIT", memory.DefaultContextLimit),
 	}
 
 	return cfg, nil

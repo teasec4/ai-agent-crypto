@@ -1,21 +1,21 @@
 package guardrails
 
 import (
-	"ai-agent/internal/llm"
 	"fmt"
+
+	"ai-agent/internal/llm"
 )
 
-type GuardrailInput struct{
+type GuardrailInput struct {
 	Iteration int
-	Messages *[]llm.Message
+	Messages  []llm.Message
 }
-
 
 type GuardrailFn func(input GuardrailInput) error
 
-func MaxIterations(limit int) GuardrailFn{
+func MaxIterations(limit int) GuardrailFn {
 	return func(input GuardrailInput) error {
-		if input.Iteration >= limit{
+		if input.Iteration >= limit {
 			return fmt.Errorf("reached iteration limit (%d)", limit)
 		}
 
@@ -25,14 +25,13 @@ func MaxIterations(limit int) GuardrailFn{
 
 func MaxMessages(limit int) GuardrailFn {
 	return func(input GuardrailInput) error {
-		if len(*input.Messages) > limit {
+		if len(input.Messages) > limit {
 			return fmt.Errorf("reached message limit (%d)", limit)
 		}
 
 		return nil
 	}
 }
-
 
 func CombineGuardrails(fns ...GuardrailFn) GuardrailFn {
 	return func(input GuardrailInput) error {

@@ -12,24 +12,29 @@ const (
 	RoleAssistant = "assistant"
 	RoleSystem    = "system"
 
-	ToolObservationPrefix = "Tool observation: "
+	SystemDefaultPrompt = `
+You are a helpful assistant with access to tools.
+Use tools whenever they help you give a more accurate answer.
+When you have enough information, respond directly and concisely.
+`
 
 	DefaultCompactAt = 10
 
 	// SummarizePrompt instructs the LLM to condense older conversation history.
 	SummarizePrompt = `You are a conversation summarizer. Condense the following conversation into 1-2 sentences.
 
-Preserve:
-- The user's intents and what they asked about
-- Key data retrieved from tools (prices, statuses, results, errors)
-- The final answer or outcome given to the user
-- Any decisions or conclusions reached
-
-Discard:
-- Verbose tool logs, repetitive formatting, truncation markers
-- Redundant or obvious details
-
-Output only the summary, no explanations.`
+		Preserve:
+		- The user's intents and what they asked about
+		- Key data retrieved from tools (prices, statuses, results, errors)
+		- The final answer or outcome given to the user
+		- Any decisions or conclusions reached
+		
+		Discard:
+		- Verbose tool logs, repetitive formatting, truncation markers
+		- Redundant or obvious details
+		
+		Output only the summary, no explanations.
+	`
 
 	CompactKeepRatio = 2 // keep at most len(Messages)/CompactKeepRatio messages after compaction
 )
@@ -41,6 +46,12 @@ type WorkMemory struct {
 
 func NewWorkMemory() *WorkMemory {
 	return &WorkMemory{Messages: make([]llm.Message, 0)}
+}
+
+func (h *WorkMemory) CreateContext(content string) {
+	// default system role
+	h.Messages = append(h.Messages, llm.Message{Role: RoleSystem, Content: SystemDefaultPrompt})
+	h.AddUser(content)
 }
 
 func (h *WorkMemory) AddUser(content string) {
@@ -58,7 +69,7 @@ func (h *WorkMemory) AddTool(content string) {
 	if content == "" {
 		return
 	}
-	h.Messages = append(h.Messages, llm.Message{Role: RoleAssistant, Content: ToolObservationPrefix + content})
+	h.Messages = append(h.Messages, llm.Message{Role: RoleAssistant, Content: "Tool observation: " + content})
 }
 
 // CompactIfNeeded checks if the history exceeds the threshold and compacts it.
