@@ -15,10 +15,10 @@ const (
 	ToolObservationPrefix = "Tool observation: "
 
 	SystemDefaultPrompt = `
-You are a helpful assistant with access to tools.
-Use tools whenever they help you give a more accurate answer.
-When you have enough information, respond directly and concisely.
-`
+		You are a helpful assistant with access to tools.
+		Use tools whenever they help you give a more accurate answer.
+		When you have enough information, respond directly and concisely.
+	`
 
 	DefaultCompactAt = 10
 
