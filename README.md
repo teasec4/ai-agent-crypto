@@ -17,7 +17,7 @@ The current goal is to keep the architecture understandable while experimenting 
 ```text
 cmd/
 └── cli/
-    └── main.go              # Interactive CLI. Creates one Harness and one Session.
+    └── main.go              # Interactive CLI. Creates one Harness and one AgentSession.
 
 internal/
 ├── harness/
@@ -48,6 +48,9 @@ internal/
 ├── memory/
 │   └── work_memory.go       # Short-term message history and compaction.
 │
+├── session/
+│   └── store.go             # In-memory API session store keyed by session ID.
+│
 ├── llm/
 │   ├── client.go            # OpenAI-compatible HTTP client.
 │   ├── model.go             # Model endpoint/key/name config.
@@ -67,7 +70,7 @@ internal/
 ```go
 cfg, _ := config.Load()
 h := harness.New(cfg)
-session := h.NewSession()
+session := h.NewAgentSession()
 ```
 
 For every user input it calls:
@@ -81,8 +84,8 @@ Inside one session:
 
 ```text
 1. Harness owns reusable dependencies.
-2. Session owns WorkMemory.
-3. Session starts with:
+2. AgentSession owns WorkMemory.
+3. AgentSession starts with:
    - default system prompt
 4. Every user input is appended to the same WorkMemory.
 5. Loop checks guardrails.
@@ -100,7 +103,7 @@ Tool results are stored as regular `user` messages with the `Tool observation:` 
 
 If the model returns a plain text answer immediately after a tool observation instead of planner JSON, the planner accepts it as the final answer for that turn. This is a defensive fallback for models that occasionally finalize after seeing tool output.
 
-`Harness.Run(task)` still exists as a one-shot helper. It creates a fresh session internally, runs one task, and discards the memory. Interactive code should prefer `NewSession`.
+`Harness.Run(task)` still exists as a one-shot helper. It creates a fresh AgentSession internally, runs one task, and discards the memory. Interactive code should prefer `NewAgentSession`.
 
 ---
 
@@ -118,11 +121,11 @@ guardrails
 
 This keeps `loop` simple. The loop does not know about env vars, API keys, or tool construction. It only receives a `LoopRequest` with ready-to-use dependencies.
 
-Important: create `Harness` once and reuse it. For chat-like behavior, create `Session` once and call `session.Run(input)` for every user message.
+Important: create `Harness` once and reuse it. For chat-like behavior, create `AgentSession` once and call `session.Run(input)` for every user message.
 
-## Why Session Exists
+## Why AgentSession Exists
 
-`Session` owns conversation state:
+`AgentSession` owns conversation state:
 
 ```text
 WorkMemory
@@ -134,11 +137,13 @@ In the CLI:
 
 ```text
 Harness = process-level dependencies
-Session = current conversation
+AgentSession = current conversation
 Run     = one user turn inside that conversation
 ```
 
 The `/reset` command clears the current session memory and keeps the same harness.
+
+For the HTTP API, `internal/session.Store` keeps API session IDs mapped to `WorkMemory` instances. That separates request/session storage from the harness runtime object.
 
 ---
 
@@ -225,10 +230,10 @@ The project is intentionally in a simpler phase now:
 ```text
 short-term memory only
 harness-owned dependencies
-session-owned conversation state
+agent-session-owned conversation state
 loop-owned iteration
 guardrails before planning
 native Go tools
 ```
 
-Long-term memory, MCP adapters, sessions, and evals can be added later once this core loop feels boring and obvious.
+Long-term memory, MCP adapters, persistent session storage, and evals can be added later once this core loop feels boring and obvious.
