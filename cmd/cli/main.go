@@ -16,7 +16,7 @@ func main() {
 		log.Fatalf("error loading config: %v", err)
 	}
 	h := harness.New(cfg)
-	session := h.NewSession()
+	session := h.NewAgentSession()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Println("AI Agent ready. Type your request (/reset to clear context, Ctrl+C to exit):")

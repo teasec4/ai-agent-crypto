@@ -25,14 +25,13 @@ type HarnessExecutionResult struct {
 	Task       string
 }
 
-type Session struct {
+type AgentSession struct {
 	harness *Harness
 	memory  *memory.WorkMemory
 }
 
 func New(cfg *config.Config) *Harness {
 	cryptoTool := tools.NewCryptoTool()
-
 
 	reg := registry.New(cryptoTool)
 
@@ -56,26 +55,26 @@ func New(cfg *config.Config) *Harness {
 	}
 }
 
-func (h *Harness) NewSession() *Session {
-	return &Session{
+func (h *Harness) NewAgentSession() *AgentSession {
+	return &AgentSession{
 		harness: h,
 		memory:  memory.NewDefaultWorkMemory(),
 	}
 }
 
 func (h *Harness) Run(task string) HarnessExecutionResult {
-	return h.NewSession().Run(task)
+	return h.NewAgentSession().Run(task)
 }
 
-func (s *Session) Run(task string) HarnessExecutionResult {
-	s.memory.AddUser(task)
+func (h *Harness) RunWithMemory(task string, workMemory *memory.WorkMemory) HarnessExecutionResult {
+	workMemory.AddUser(task)
 
 	result := loop.RunLoop(loop.LoopRequest{
-		Memory:    s.memory,
-		Guardrail: s.harness.guardrail,
-		Planner:   s.harness.planner,
-		Executor:  s.harness.executor,
-		LLMClient: s.harness.llmClient,
+		Memory:    workMemory,
+		Guardrail: h.guardrail,
+		Planner:   h.planner,
+		Executor:  h.executor,
+		LLMClient: h.llmClient,
 	})
 
 	return HarnessExecutionResult{
@@ -84,6 +83,10 @@ func (s *Session) Run(task string) HarnessExecutionResult {
 	}
 }
 
-func (s *Session) Reset() {
+func (s *AgentSession) Run(task string) HarnessExecutionResult {
+	return s.harness.RunWithMemory(task, s.memory)
+}
+
+func (s *AgentSession) Reset() {
 	s.memory.Reset()
 }

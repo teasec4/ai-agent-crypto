@@ -4,6 +4,7 @@ import (
 	"ai-agent/internal/config"
 	"ai-agent/internal/handler"
 	"ai-agent/internal/harness"
+	"ai-agent/internal/session"
 	"log"
 	"net/http"
 )
@@ -15,7 +16,8 @@ func main() {
 	}
 
 	h := harness.New(cfg)
-	agentHandler := handler.NewAgentHandler(h)
+	sessionStore := session.NewStore()
+	agentHandler := handler.NewAgentHandler(h, sessionStore)
 
 	mux := http.NewServeMux()
 	agentHandler.RegisterRoutes(mux)
