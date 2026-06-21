@@ -1,4 +1,4 @@
- package llm
+package llm
 
 import (
 	"bytes"
@@ -10,8 +10,10 @@ import (
 )
 
 type Client struct {
-	Model      Model
-	HTTPClient *http.Client
+	Model       Model
+	Temperature float64
+	MaxTokens   int
+	HTTPClient  *http.Client
 }
 
 func NewClientWithTimeout(apiKey string, baseURL string, model string, temperature float64, maxTokens int, timeout time.Duration) *Client {
@@ -19,7 +21,9 @@ func NewClientWithTimeout(apiKey string, baseURL string, model string, temperatu
 		timeout = 60 * time.Second
 	}
 	return &Client{
-		Model: *NewModel(baseURL, apiKey, model),
+		Model:       *NewModel(baseURL, apiKey, model),
+		Temperature: temperature,
+		MaxTokens:   maxTokens,
 		HTTPClient: &http.Client{
 			Timeout: timeout,
 		},
@@ -28,8 +32,10 @@ func NewClientWithTimeout(apiKey string, baseURL string, model string, temperatu
 
 func (c *Client) Chat(messages []Message) (string, error) {
 	reqBody := Request{
-		Model:    c.Model.Model,
-		Messages: messages,
+		Model:       c.Model.Model,
+		Messages:    messages,
+		Temperature: c.Temperature,
+		MaxTokens:   c.MaxTokens,
 	}
 
 	body, err := json.Marshal(reqBody)

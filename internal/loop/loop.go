@@ -41,7 +41,7 @@ func RunLoop(req LoopRequest) LoopResult {
 				ContextSize: req.Memory.Len(),
 			})
 			return LoopResult{
-				Answer:     fmt.Sprintf("Не удалось построить план: %v", err),
+				Answer:     fmt.Sprintf("Failed to build plan: %v", err),
 				Iterations: len(trace),
 				Trace:      trace,
 				StoppedBy:  StoppedByError,

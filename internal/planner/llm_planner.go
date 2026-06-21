@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"ai-agent/internal/llm"
+	"ai-agent/internal/memory"
 	"ai-agent/internal/tools/registry"
 )
 
@@ -35,11 +36,11 @@ func (p *LLMPlanner) Plan(history []llm.Message) (PlanResult, error) {
 
 	var planResponse PlanResult
 	if err := json.Unmarshal([]byte(response), &planResponse); err != nil {
-		if canUsePlainReplyAfterTool(history, response) {
+		if reply, ok := plainReplyFallback(history, response); ok {
 			return PlanResult{
 				Action:     ActionMessage,
 				Parameters: map[string]interface{}{},
-				Reply:      cleanPlainReplyAfterTool(response),
+				Reply:      reply,
 			}, nil
 		}
 		return PlanResult{}, fmt.Errorf("failed to parse planner JSON %q: %w", response, err)
@@ -74,25 +75,37 @@ func cleanJSONResponse(response string) string {
 	return strings.TrimSpace(response)
 }
 
-func canUsePlainReplyAfterTool(history []llm.Message, response string) bool {
-	if strings.TrimSpace(response) == "" {
-		return false
+// plainReplyFallback accepts a non-JSON LLM response as a direct answer.
+// It returns the cleaned reply and true when:
+//   - The last user-visible message is a tool observation (model finalized after tool output)
+//   - The response is a plain text answer (model skipped the JSON format)
+func plainReplyFallback(history []llm.Message, response string) (string, bool) {
+	response = strings.TrimSpace(response)
+	if response == "" {
+		return "", false
 	}
 
+	if lastMessageIsToolObservation(history) {
+		return cleanReplyAfterTool(response), true
+	}
+
+	// Model returned a plain text answer instead of planner JSON.
+	return response, true
+}
+
+func lastMessageIsToolObservation(history []llm.Message) bool {
 	for i := len(history) - 1; i >= 0; i-- {
 		content := strings.TrimSpace(history[i].Content)
 		if content == "" {
 			continue
 		}
-		return strings.HasPrefix(content, "Tool observation:")
+		return strings.HasPrefix(content, memory.ToolObservationPrefix)
 	}
-
 	return false
 }
 
-func cleanPlainReplyAfterTool(response string) string {
-	response = strings.TrimSpace(response)
-	if !strings.HasPrefix(response, "Tool observation:") {
+func cleanReplyAfterTool(response string) string {
+	if !strings.HasPrefix(response, memory.ToolObservationPrefix) {
 		return response
 	}
 
@@ -118,24 +131,24 @@ func (p *LLMPlanner) buildMessages(history []llm.Message) []llm.Message {
 	- "message": answer directly without a tool
 	- "unknown": use only when no available tool or direct answer fits the request
 	- any registered tool listed below
-	
+
 	%s
-	
+
 	Return ONLY valid JSON, no markdown.
 	Messages that start with "Tool observation:" are tool results for you to use. Do not copy that prefix into your reply.
-	
+
 	For a tool call:
 	{
 	  "action": "tool_name",
 	  "parameters": { "key": "value" }
 	}
-	
+
 	For a direct answer:
 	{
 	  "action": "message",
 	  "reply": "your answer"
 	}
-	
+
 	For an unsupported or unclear request:
 	{
 	  "action": "unknown",
