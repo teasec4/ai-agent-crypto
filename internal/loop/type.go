@@ -1,6 +1,10 @@
 package loop
 
 import (
+	"log/slog"
+	"time"
+
+	"ai-agent/internal/approval"
 	"ai-agent/internal/executor"
 	"ai-agent/internal/guardrails"
 	"ai-agent/internal/llm"
@@ -37,19 +41,26 @@ const (
 	StoppedByGuardrail StoppedBy = "guardrail"
 	StoppedBySuccess   StoppedBy = "success"
 	StoppedByError     StoppedBy = "error"
+	StoppedByApproval  StoppedBy = "approval_required"
 )
 
 type LoopResult struct {
-	Answer     string          `json:"answer"`
-	Iterations int             `json:"iterations"`
-	Trace      []LoopIteration `json:"trace"`
-	StoppedBy  StoppedBy       `json:"stoppedBy"`
+	Answer        string                  `json:"answer"`
+	Iterations    int                     `json:"iterations"`
+	Trace         []LoopIteration         `json:"trace"`
+	StoppedBy     StoppedBy               `json:"stoppedBy"`
+	PendingAction *approval.PendingAction `json:"pendingAction,omitempty"`
 }
 
 type LoopRequest struct {
-	Memory    *memory.WorkMemory
-	Guardrail guardrails.GuardrailFn
-	Planner   *planner.LLMPlanner
-	Executor  *executor.ToolExecutor
-	LLMClient llm.LlmClient
+	Memory        *memory.WorkMemory
+	Guardrail     guardrails.GuardrailFn
+	Planner       *planner.LLMPlanner
+	Executor      *executor.ToolExecutor
+	LLMClient     llm.LlmClient
+	AutoApprove   bool
+	Logger        *slog.Logger
+	Workspace     string
+	MaxIterations int       // 0 means use DefaultMaxIterations
+	Deadline      time.Time // zero means no deadline
 }

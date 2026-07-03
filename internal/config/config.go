@@ -20,7 +20,9 @@ type Config struct {
 	LLMMaxTokens   int
 
 	// Application Settings
-	TimeoutSeconds int
+	TimeoutSeconds     int
+	SessionStoragePath string
+	LogLevel           string
 }
 
 // Load loads configuration from .env file and environment variables
@@ -42,7 +44,9 @@ func Load() (*Config, error) {
 		LLMMaxTokens:   getEnvInt("LLM_MAX_TOKENS", 2048),
 
 		// Application Settings
-		TimeoutSeconds: getEnvInt("TIMEOUT_SECONDS", 30),
+		TimeoutSeconds:     getEnvInt("TIMEOUT_SECONDS", 30),
+		SessionStoragePath: getEnv("SESSION_STORAGE_PATH", "data/sessions.json"),
+		LogLevel:           getEnv("LOG_LEVEL", "info"),
 	}
 
 	return cfg, nil

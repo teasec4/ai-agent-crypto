@@ -1,5 +1,7 @@
 package tools
 
+import "ai-agent/internal/approval"
+
 // Tool is the interface that all tools must implement.
 type Tool interface {
 	// Name returns the unique name of the tool (e.g. "get_crypto_price").
@@ -11,4 +13,17 @@ type Tool interface {
 
 	// Run executes the tool with the given parameters and returns the result.
 	Run(params map[string]interface{}) (string, error)
+}
+
+// ApprovalAwareTool can request user approval before execution.
+type ApprovalAwareTool interface {
+	RequiresApproval(params map[string]interface{}) bool
+	Risk(params map[string]interface{}) approval.RiskLevel
+	Preview(params map[string]interface{}) (string, error)
+	Summary(params map[string]interface{}) string
+}
+
+// WorkspaceTool accepts a configurable workspace root path.
+type WorkspaceTool interface {
+	SetRoot(path string)
 }

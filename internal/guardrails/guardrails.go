@@ -15,7 +15,7 @@ type GuardrailFn func(input GuardrailInput) error
 
 func MaxIterations(limit int) GuardrailFn {
 	return func(input GuardrailInput) error {
-		if input.Iteration >= limit {
+		if input.Iteration > limit {
 			return fmt.Errorf("reached iteration limit (%d)", limit)
 		}
 

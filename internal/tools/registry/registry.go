@@ -57,3 +57,8 @@ func (r *Registry) IsValid(name string) bool {
 	_, ok := r.tools[name]
 	return ok
 }
+
+// Count returns the number of registered tools.
+func (r *Registry) Count() int {
+	return len(r.tools)
+}

@@ -2,7 +2,10 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"ai-agent/internal/harness"
@@ -10,6 +13,8 @@ import (
 	"ai-agent/internal/memory"
 	"ai-agent/internal/session"
 )
+
+const maxRequestBodySize = 1 << 20 // 1 MB
 
 type AgentHandler struct {
 	harness  *harness.Harness
@@ -27,6 +32,9 @@ func (h *AgentHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", h.Health)
 	mux.HandleFunc("GET /sessions", h.ListSessions)
 	mux.HandleFunc("GET /sessions/{sessionID}", h.GetSession)
+	mux.HandleFunc("DELETE /sessions/{sessionID}", h.DeleteSession)
+	mux.HandleFunc("POST /sessions/{sessionID}/approvals/{approvalID}", h.ResolveApproval)
+	mux.HandleFunc("POST /sessions/{sessionID}/workspace", h.SetWorkspace)
 	mux.HandleFunc("POST /sessions", h.CreateSession)
 	mux.HandleFunc("POST /ask", h.Ask)
 	mux.HandleFunc("POST /chat/completion", h.Ask)
@@ -38,8 +46,8 @@ func (h *AgentHandler) Health(w http.ResponseWriter, r *http.Request) {
 
 func (h *AgentHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	var req AskRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "invalid JSON request body"})
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
 		return
 	}
 
@@ -56,21 +64,77 @@ func (h *AgentHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var result harness.HarnessExecutionResult
+	sessionWorkspace := state.Workspace()
 	state.WithMemory(func(workMemory *memory.WorkMemory) {
-		result = h.harness.RunWithMemory(message, workMemory)
+		result = h.harness.RunWithMemory(message, workMemory, sessionWorkspace)
 	})
 
+	if result.LoopResult.PendingAction != nil {
+		state.SetPending(result.LoopResult.PendingAction)
+	}
+
 	writeJSON(w, http.StatusOK, AskResponse{
-		SessionID:  state.ID,
-		Answer:     result.LoopResult.Answer,
-		Iterations: result.LoopResult.Iterations,
-		StoppedBy:  string(result.LoopResult.StoppedBy),
+		SessionID:     state.ID,
+		Answer:        result.LoopResult.Answer,
+		Iterations:    result.LoopResult.Iterations,
+		StoppedBy:     string(result.LoopResult.StoppedBy),
+		Trace:         result.LoopResult.Trace,
+		PendingAction: result.LoopResult.PendingAction,
 	})
 }
 
 func (h *AgentHandler) CreateSession(w http.ResponseWriter, r *http.Request) {
 	state := h.sessions.Create()
 	writeJSON(w, http.StatusCreated, SessionResponse{SessionID: state.ID})
+}
+
+func (h *AgentHandler) ResolveApproval(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	approvalID := strings.TrimSpace(r.PathValue("approvalID"))
+	if sessionID == "" || approvalID == "" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "session ID and approval ID are required"})
+		return
+	}
+
+	state, ok := h.sessions.Get(sessionID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "session not found"})
+		return
+	}
+	action, ok := state.GetPending(approvalID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "approval not found"})
+		return
+	}
+
+	var req ApprovalRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	state.ClearPending(approvalID)
+	var result harness.HarnessExecutionResult
+	sessionWorkspace := state.Workspace()
+	state.WithMemory(func(workMemory *memory.WorkMemory) {
+		if req.Approved {
+			result = h.harness.ContinueWithApprovedAction(action, workMemory, sessionWorkspace)
+		} else {
+			result = h.harness.RecordRejectedAction(action, workMemory)
+		}
+	})
+	if result.LoopResult.PendingAction != nil {
+		state.SetPending(result.LoopResult.PendingAction)
+	}
+
+	writeJSON(w, http.StatusOK, AskResponse{
+		SessionID:     state.ID,
+		Answer:        result.LoopResult.Answer,
+		Iterations:    result.LoopResult.Iterations,
+		StoppedBy:     string(result.LoopResult.StoppedBy),
+		Trace:         result.LoopResult.Trace,
+		PendingAction: result.LoopResult.PendingAction,
+	})
 }
 
 func (h *AgentHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
@@ -93,12 +157,74 @@ func (h *AgentHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 	snapshot := state.Snapshot(true)
 	messages := visibleMessages(snapshot.Messages)
 	writeJSON(w, http.StatusOK, SessionDetailResponse{
-		ID:           snapshot.ID,
-		SessionID:    snapshot.ID,
-		CreatedAt:    snapshot.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:    snapshot.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		MessageCount: len(messages),
-		Messages:     messages,
+		ID:             snapshot.ID,
+		SessionID:      snapshot.ID,
+		CreatedAt:      snapshot.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:      snapshot.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		MessageCount:   len(messages),
+		Messages:       messages,
+		PendingActions: snapshot.Pending,
+		Workspace:      snapshot.Workspace,
+	})
+}
+
+func (h *AgentHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "session ID is required"})
+		return
+	}
+
+	if !h.sessions.Delete(sessionID) {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "session not found"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h *AgentHandler) SetWorkspace(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "session ID is required"})
+		return
+	}
+
+	state, ok := h.sessions.Get(sessionID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "session not found"})
+		return
+	}
+
+	var req SetWorkspaceRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	path := strings.TrimSpace(req.Path)
+	if path == "" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "path is required"})
+		return
+	}
+
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "path must be an existing directory"})
+		return
+	}
+
+	state.SetWorkspace(path)
+
+	snapshot := state.Snapshot(false)
+	writeJSON(w, http.StatusOK, SessionDetailResponse{
+		ID:             snapshot.ID,
+		SessionID:      snapshot.ID,
+		CreatedAt:      snapshot.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:      snapshot.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		MessageCount:   snapshot.MessageCount,
+		PendingActions: snapshot.Pending,
+		Workspace:      snapshot.Workspace,
 	})
 }
 
@@ -136,8 +262,36 @@ func visibleMessages(messages []llm.Message) []ChatMessageResponse {
 	return result
 }
 
+// decodeJSON reads and decodes a JSON request body with size limit and strict parsing.
+func decodeJSON(r *http.Request, v any) error {
+	defer func() { _ = r.Body.Close() }()
+	r.Body = http.MaxBytesReader(nil, r.Body, maxRequestBodySize)
+
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		if strings.Contains(err.Error(), "request body too large") {
+			return fmt.Errorf("request body too large (max %d bytes)", maxRequestBodySize)
+		}
+		return fmt.Errorf("invalid JSON request body: %v", err)
+	}
+
+	// Drain remaining body to allow connection reuse
+	_, _ = io.Copy(io.Discard, r.Body)
+	return nil
+}
+
+// writeJSON encodes value, then writes status and body — status goes last to avoid broken responses.
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to encode response"}`))
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	_, _ = w.Write(data)
 }
