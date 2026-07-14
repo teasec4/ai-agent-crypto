@@ -26,6 +26,32 @@ class AskResponse {
   }
 }
 
+class SessionSummary {
+  final String id;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+  final int messageCount;
+  final String? workspace;
+
+  SessionSummary({
+    required this.id,
+    this.createdAt,
+    this.updatedAt,
+    required this.messageCount,
+    this.workspace,
+  });
+
+  factory SessionSummary.fromJson(Map<String, dynamic> json) {
+    return SessionSummary(
+      id: json['id'] as String,
+      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? ''),
+      updatedAt: DateTime.tryParse(json['updatedAt'] as String? ?? ''),
+      messageCount: (json['messageCount'] as num?)?.toInt() ?? 0,
+      workspace: json['workspace'] as String?,
+    );
+  }
+}
+
 class Trace {
   final int index;
   final String outcome;

@@ -1,58 +1,94 @@
+import 'package:flutter/foundation.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
-import 'package:flutterapp/Session/service/domain/request.dart';
 import 'package:flutterapp/Session/service/domain/response.dart';
 import 'package:flutterapp/Session/service/domain/sse_event.dart';
+import 'package:http/http.dart' as http;
+
+class ApiException implements Exception {
+  final String message;
+  final int? statusCode;
+
+  const ApiException(this.message, {this.statusCode});
+
+  @override
+  String toString() {
+    if (statusCode == null) return message;
+    return 'HTTP $statusCode: $message';
+  }
+}
 
 class ApiService {
-  static const _host = 'http://localhost:8080';
+  static final _defaultBaseUrl = String.fromEnvironment(
+    'AGENT_API_BASE_URL',
+    defaultValue: _platformDefaultBaseUrl(),
+  );
+  static const requestTimeout = Duration(seconds: 20);
 
-  /// Create a new session and return its ID.
-  static Future<String> createSession() async {
-    final client = HttpClient();
-    try {
-      final req = await client.postUrl(Uri.parse('$_host/sessions'));
-      final res = await req.close();
-      final body = await res.transform(utf8.decoder).join();
-      return jsonDecode(body)['sessionId'] as String;
-    } finally {
-      client.close();
+  static Uri baseUri = Uri.parse(_defaultBaseUrl);
+
+  static http.Client? _clientOverride;
+
+  static String _platformDefaultBaseUrl() {
+    if (kIsWeb) return 'http://localhost:8080';
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return 'http://10.0.2.2:8080';
+      case TargetPlatform.iOS:
+      case TargetPlatform.macOS:
+      case TargetPlatform.linux:
+      case TargetPlatform.windows:
+      case TargetPlatform.fuchsia:
+        return 'http://localhost:8080';
     }
   }
 
-  /// Set the workspace directory for a session.
-  static Future<void> setWorkspace(String sessionId, String path) async {
-    final client = HttpClient();
-    try {
-      final req = await client.postUrl(
-        Uri.parse('$_host/sessions/$sessionId/workspace'),
-      );
-      req.headers.contentType = ContentType.json;
-      req.write(jsonEncode({'path': path}));
-      await req.close();
-    } finally {
-      client.close();
+  static void configureForTesting({Uri? baseUriOverride, http.Client? client}) {
+    if (baseUriOverride != null) baseUri = baseUriOverride;
+    _clientOverride = client;
+  }
+
+  static http.Client _newClient() => _clientOverride ?? http.Client();
+
+  static bool get _shouldCloseClient => _clientOverride == null;
+
+  /// Create a new session and return its ID.
+  static Future<String> createSession() async {
+    final json = await _postJson('/sessions');
+    final sessionId = json['sessionId'] as String?;
+    if (sessionId == null || sessionId.isEmpty) {
+      throw const ApiException('Server did not return a sessionId');
     }
+    return sessionId;
+  }
+
+  /// Reuse the most recently updated backend session, or create one.
+  static Future<String> getOrCreateSession() async {
+    final sessions = await listSessions();
+    if (sessions.isNotEmpty) return sessions.first.id;
+    return createSession();
+  }
+
+  /// List backend sessions. The backend returns them newest first.
+  static Future<List<SessionSummary>> listSessions() async {
+    final json = await _getJsonList('/sessions');
+    return json
+        .map((item) => SessionSummary.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Set the workspace directory for a session. The path is resolved by the backend.
+  static Future<void> setWorkspace(String sessionId, String path) async {
+    await _postJson('/sessions/$sessionId/workspace', body: {'path': path});
   }
 
   /// Send a message via POST /ask (non-streaming, returns final answer).
   static Future<AskResponse> ask(String message, {String? sessionId}) async {
-    final client = HttpClient();
-    try {
-      final req = await client.postUrl(Uri.parse('$_host/ask'));
-      req.headers.contentType = ContentType.json;
-      req.write(jsonEncode({
-        if (sessionId != null) 'sessionId': sessionId,
-        'message': message,
-      }));
-      final res = await req.close();
-      final body = await res.transform(utf8.decoder).join();
-      return AskResponse.fromJson(jsonDecode(body) as Map<String, dynamic>);
-    } finally {
-      client.close();
-    }
+    final body = <String, dynamic>{'message': message};
+    if (sessionId != null) body['sessionId'] = sessionId;
+    final json = await _postJson('/ask', body: body);
+    return AskResponse.fromJson(json);
   }
 
   /// Stream a message via POST /sessions/{sessionId}/stream.
@@ -62,77 +98,189 @@ class ApiService {
     String message,
     void Function(SseEvent event) onEvent,
   ) async {
-    final client = HttpClient();
+    final client = _newClient();
     try {
-      final req = await client.postUrl(
-        Uri.parse('$_host/sessions/$sessionId/stream'),
-      );
-      req.headers.contentType = ContentType.json;
-      req.write(jsonEncode({'message': message}));
+      final request =
+          http.Request('POST', _resolve('/sessions/$sessionId/stream'))
+            ..headers['Accept'] = 'text/event-stream'
+            ..headers['Content-Type'] = 'application/json'
+            ..body = jsonEncode({'message': message});
 
-      final res = await req.close();
-      final lines = res.transform(utf8.decoder).transform(const LineSplitter());
-
-      await for (final line in lines) {
-        if (!line.startsWith('data: ')) continue;
-
-        final data = jsonDecode(line.substring(6)) as Map<String, dynamic>;
-        final type = data['type'] as String?;
-
-        switch (type) {
-          case 'thinking':
-            onEvent(SseThinking());
-          case 'tool_start':
-            onEvent(SseToolStart(
-              tool: data['tool'] as String,
-              args: data['args'] as Map<String, dynamic>?,
-            ));
-          case 'tool_done':
-            onEvent(SseToolDone(
-              tool: data['tool'] as String,
-              result: data['result'] as String?,
-            ));
-          case 'tool_error':
-            onEvent(SseToolError(
-              tool: data['tool'] as String,
-              error: data['error'] as String?,
-            ));
-          case 'approval_required':
-            onEvent(SseApprovalRequired(tool: data['tool'] as String));
-          case 'done':
-            onEvent(SseDone(answer: data['answer'] as String));
-          case 'close':
-            onEvent(SseClose());
-        }
+      final response = await client.send(request).timeout(requestTimeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        final body = await response.stream.bytesToString();
+        throw ApiException(
+          _extractError(body),
+          statusCode: response.statusCode,
+        );
       }
+
+      await _readSse(response.stream, onEvent);
     } finally {
-      client.close();
+      if (_shouldCloseClient) client.close();
     }
   }
 
   /// Approve a pending action (for SSE approval flow).
   static Future<void> approve(String sessionId) async {
-    final client = HttpClient();
-    try {
-      final req = await client.postUrl(
-        Uri.parse('$_host/sessions/$sessionId/approve'),
-      );
-      await req.close();
-    } finally {
-      client.close();
-    }
+    await _postJson('/sessions/$sessionId/approve');
   }
 
   /// Reject a pending action (for SSE approval flow).
   static Future<void> reject(String sessionId) async {
-    final client = HttpClient();
+    await _postJson('/sessions/$sessionId/reject');
+  }
+
+  static Future<Map<String, dynamic>> _postJson(
+    String path, {
+    Map<String, dynamic>? body,
+  }) async {
+    final client = _newClient();
     try {
-      final req = await client.postUrl(
-        Uri.parse('$_host/sessions/$sessionId/reject'),
-      );
-      await req.close();
+      final response = await client
+          .post(
+            _resolve(path),
+            headers: {'Content-Type': 'application/json'},
+            body: body == null ? null : jsonEncode(body),
+          )
+          .timeout(requestTimeout);
+
+      final responseBody = response.body;
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw ApiException(
+          _extractError(responseBody),
+          statusCode: response.statusCode,
+        );
+      }
+      if (responseBody.trim().isEmpty) return <String, dynamic>{};
+      return jsonDecode(responseBody) as Map<String, dynamic>;
+    } on TimeoutException {
+      throw const ApiException('Request timed out. Is the agent API running?');
     } finally {
-      client.close();
+      if (_shouldCloseClient) client.close();
+    }
+  }
+
+  static Future<List<dynamic>> _getJsonList(String path) async {
+    final client = _newClient();
+    try {
+      final response = await client.get(_resolve(path)).timeout(requestTimeout);
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw ApiException(
+          _extractError(response.body),
+          statusCode: response.statusCode,
+        );
+      }
+      if (response.body.trim().isEmpty) return <dynamic>[];
+      return jsonDecode(response.body) as List<dynamic>;
+    } on TimeoutException {
+      throw const ApiException('Request timed out. Is the agent API running?');
+    } finally {
+      if (_shouldCloseClient) client.close();
+    }
+  }
+
+  static Uri _resolve(String path) {
+    final normalized = path.startsWith('/') ? path.substring(1) : path;
+    return baseUri.resolve(normalized);
+  }
+
+  static String _extractError(String body) {
+    if (body.trim().isEmpty) return 'Empty error response from server';
+    try {
+      final json = jsonDecode(body) as Map<String, dynamic>;
+      return json['error'] as String? ?? body;
+    } catch (_) {
+      return body;
+    }
+  }
+
+  static Future<void> _readSse(
+    Stream<List<int>> stream,
+    void Function(SseEvent event) onEvent,
+  ) async {
+    String? eventName;
+    final dataLines = <String>[];
+    final lines = stream
+        .transform(utf8.decoder)
+        .transform(const LineSplitter());
+
+    Future<void> dispatch() async {
+      if (eventName == null && dataLines.isEmpty) return;
+      final data = dataLines.join('\n');
+      _dispatchSseEvent(eventName, data, onEvent);
+      eventName = null;
+      dataLines.clear();
+    }
+
+    await for (final rawLine in lines) {
+      final line = rawLine.trimRight();
+      if (line.isEmpty) {
+        await dispatch();
+        continue;
+      }
+      if (line.startsWith(':')) continue;
+      if (line.startsWith('event:')) {
+        eventName = line.substring(6).trim();
+        continue;
+      }
+      if (line.startsWith('data:')) {
+        dataLines.add(line.substring(5).trimLeft());
+      }
+    }
+    await dispatch();
+  }
+
+  static void _dispatchSseEvent(
+    String? eventName,
+    String data,
+    void Function(SseEvent event) onEvent,
+  ) {
+    final json = data.isEmpty
+        ? <String, dynamic>{}
+        : jsonDecode(data) as Map<String, dynamic>;
+    final type = json['type'] as String? ?? eventName;
+
+    switch (type) {
+      case 'thinking':
+        onEvent(SseThinking());
+      case 'tool_start':
+        onEvent(
+          SseToolStart(
+            tool: json['tool'] as String? ?? '',
+            args: json['args'] as Map<String, dynamic>?,
+          ),
+        );
+      case 'tool_done':
+        onEvent(
+          SseToolDone(
+            tool: json['tool'] as String? ?? '',
+            result: json['result'] as String?,
+          ),
+        );
+      case 'tool_error':
+        onEvent(
+          SseToolError(
+            tool: json['tool'] as String? ?? '',
+            error: json['error'] as String?,
+          ),
+        );
+      case 'approval_required':
+        final actionJson = json['action'];
+        final action = actionJson is Map<String, dynamic>
+            ? PendingAction.fromJson(actionJson)
+            : null;
+        onEvent(
+          SseApprovalRequired(
+            tool: json['tool'] as String? ?? action?.tool ?? '',
+            action: action,
+          ),
+        );
+      case 'done':
+        onEvent(SseDone(answer: json['answer'] as String? ?? ''));
+      case 'close':
+        onEvent(SseClose());
     }
   }
 }

@@ -11,10 +11,10 @@ class MessageBubble extends StatelessWidget {
     final isUser = message.role == 'user';
     final isTool = message.role == 'tool';
     final color = isTool
-        ? Colors.amber.withOpacity(0.08)
+        ? Colors.amber.withValues(alpha: 0.08)
         : isUser
-            ? Colors.blue.withOpacity(0.08)
-            : Colors.grey.withOpacity(0.08);
+        ? Colors.blue.withValues(alpha: 0.08)
+        : Colors.grey.withValues(alpha: 0.08);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),

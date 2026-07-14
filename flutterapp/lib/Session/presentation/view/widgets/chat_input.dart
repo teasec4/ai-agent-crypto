@@ -28,6 +28,9 @@ class ChatInput extends StatelessWidget {
                 isDense: true,
               ),
               enabled: enabled,
+              minLines: 1,
+              maxLines: 4,
+              textInputAction: TextInputAction.send,
               onSubmitted: enabled ? onSubmitted : null,
             ),
           ),
@@ -35,6 +38,7 @@ class ChatInput extends StatelessWidget {
           IconButton(
             onPressed: enabled ? () => onSubmitted(controller.text) : null,
             icon: const Icon(Icons.send),
+            tooltip: 'Send',
           ),
         ],
       ),

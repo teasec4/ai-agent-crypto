@@ -1,126 +1,97 @@
 import 'package:flutter/material.dart';
+import 'package:flutterapp/Session/presentation/controller/chat_controller.dart';
 import 'package:flutterapp/Session/presentation/view/widgets/approval_bar.dart';
 import 'package:flutterapp/Session/presentation/view/widgets/chat_input.dart';
 import 'package:flutterapp/Session/presentation/view/widgets/message_bubble.dart';
-import 'package:flutterapp/Session/service/api_service.dart';
-import 'package:flutterapp/Session/service/domain/chat_message.dart';
+import 'package:provider/provider.dart';
 
-class DetailScreen extends StatefulWidget {
+class DetailScreen extends StatelessWidget {
   final String sessionId;
   const DetailScreen({super.key, required this.sessionId});
 
   @override
-  State<DetailScreen> createState() => _DetailScreenState();
+  Widget build(BuildContext context) {
+    return ChangeNotifierProvider(
+      create: (_) => ChatController(sessionId: sessionId),
+      child: const _DetailScreenBody(),
+    );
+  }
 }
 
-class _DetailScreenState extends State<DetailScreen> {
-  final _controller = TextEditingController();
-  final _messages = <ChatMessage>[];
-  bool _loading = false;
-  String? _pendingApprovalTool;
+class _DetailScreenBody extends StatefulWidget {
+  const _DetailScreenBody();
+
+  @override
+  State<_DetailScreenBody> createState() => _DetailScreenBodyState();
+}
+
+class _DetailScreenBodyState extends State<_DetailScreenBody> {
+  final _inputController = TextEditingController();
+  final _scrollController = ScrollController();
+  int _lastMessageCount = 0;
 
   Future<void> _send(String text) async {
-    if (text.isEmpty || text == _controller.text) return;
-    _controller.clear();
+    _inputController.clear();
+    await context.read<ChatController>().send(text);
+  }
 
-    setState(() {
-      _messages.add(ChatMessage(role: 'user', text: text));
-      _loading = true;
-      _pendingApprovalTool = null;
-    });
-
-    try {
-      await ApiService.stream(
-        widget.sessionId,
-        text,
-        _onSseEvent,
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
       );
-    } catch (e) {
-      _add('assistant', 'Error: $e');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  void _onSseEvent(SseEvent event) {
-    switch (event) {
-      case SseThinking():
-        break;
-
-      case SseToolStart(:final tool, :final args):
-        _add('tool', '→ $tool${args != null ? ' $args' : ''}');
-
-      case SseToolDone(:final tool, :final result):
-        final preview = (result != null && result.length > 120)
-            ? '${result.substring(0, 120)}...'
-            : (result ?? '');
-        _add('tool', '✓ $tool: $preview');
-
-      case SseToolError(:final tool, :final error):
-        _add('tool', '✗ $tool: $error');
-
-      case SseApprovalRequired(:final tool):
-        _pendingApprovalTool = tool;
-        _add('assistant', '⚠️ "$tool" requires approval');
-        if (mounted) setState(() => _loading = false);
-
-      case SseDone(:final answer):
-        _add('assistant', answer);
-
-      case SseClose():
-        break;
-    }
-  }
-
-  void _add(String role, String text) {
-    if (!mounted) return;
-    setState(() => _messages.add(ChatMessage(role: role, text: text)));
+    });
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _inputController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final chat = context.watch<ChatController>();
+    final pendingApproval = chat.pendingApproval;
+
+    if (chat.messages.length != _lastMessageCount) {
+      _lastMessageCount = chat.messages.length;
+      _scrollToBottom();
+    }
+
     return Scaffold(
       appBar: AppBar(title: const Text('AI Agent')),
       body: Column(
         children: [
-          // Messages
           Expanded(
             child: ListView.builder(
+              controller: _scrollController,
               padding: const EdgeInsets.all(12),
-              itemCount: _messages.length,
-              itemBuilder: (_, i) => MessageBubble(message: _messages[i]),
+              itemCount: chat.messages.length,
+              itemBuilder: (_, i) => MessageBubble(message: chat.messages[i]),
             ),
           ),
-
-          // Approval bar
-          if (_pendingApprovalTool != null)
+          if (pendingApproval != null)
             ApprovalBar(
-              sessionId: widget.sessionId,
-              tool: _pendingApprovalTool!,
-              onReject: () => _pendingApprovalTool = null,
-              onStartLoading: () => setState(() => _loading = true),
+              action: pendingApproval,
+              onDecision: context.read<ChatController>().submitApproval,
             ),
-
-          // Spinner
-          if (_loading)
+          if (chat.loading)
             const Padding(
               padding: EdgeInsets.only(bottom: 4),
               child: SizedBox(
-                width: 16, height: 16,
+                width: 16,
+                height: 16,
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ),
-
-          // Input
           ChatInput(
-            controller: _controller,
-            enabled: !_loading,
+            controller: _inputController,
+            enabled: chat.canSend,
             onSubmitted: _send,
           ),
         ],
