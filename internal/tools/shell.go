@@ -188,7 +188,7 @@ func validateLSArgs(args []string) error {
 			}
 			continue
 		}
-		if filepath.IsAbs(arg) || strings.Contains(filepath.Clean(arg), "..") || isBlockedWorkspacePath(arg) {
+		if filepath.IsAbs(arg) || isPathTraversal(arg) || isBlockedWorkspacePath(arg) {
 			return fmt.Errorf("ls path %q is invalid or blocked", arg)
 		}
 	}
@@ -233,7 +233,7 @@ func validateSafeGoPackageArgs(args []string) error {
 			}
 			continue
 		}
-		if filepath.IsAbs(arg) || strings.Contains(filepath.Clean(arg), "..") || isBlockedWorkspacePath(arg) {
+		if filepath.IsAbs(arg) || isPathTraversal(arg) || isBlockedWorkspacePath(arg) {
 			return fmt.Errorf("go package/path argument %q is invalid or blocked", arg)
 		}
 	}
@@ -269,7 +269,7 @@ func validateNoShellLikeArgs(args []string) error {
 }
 
 func validateNoShellLikeArg(arg string) error {
-	blocked := []string{";", "&&", "||", "|", ">", "<", "$", "`", "$(", "../"}
+	blocked := []string{";", "&&", "||", "|", ">", "<", "$", "`", "$("}
 	for _, token := range blocked {
 		if strings.Contains(arg, token) {
 			return fmt.Errorf("argument %q contains blocked token %q", arg, token)
@@ -278,7 +278,16 @@ func validateNoShellLikeArg(arg string) error {
 	if filepath.IsAbs(arg) && !strings.HasPrefix(arg, "--") {
 		return fmt.Errorf("absolute path argument %q is not allowed", arg)
 	}
+	if isPathTraversal(arg) {
+		return fmt.Errorf("argument %q contains path traversal", arg)
+	}
 	return nil
+}
+
+// isPathTraversal returns true if the path attempts to escape via "..".
+func isPathTraversal(path string) bool {
+	clean := filepath.ToSlash(filepath.Clean(path))
+	return clean == ".." || strings.HasPrefix(clean, "../") || strings.HasSuffix(clean, "/..") || strings.Contains(clean, "/../")
 }
 
 func formatCommand(command string, args []string) string {
