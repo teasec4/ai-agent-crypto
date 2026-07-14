@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 
+	"ai-agent/internal/approval"
 	"ai-agent/internal/harness"
 	"ai-agent/internal/llm"
+	"ai-agent/internal/loop"
 	"ai-agent/internal/memory"
 	"ai-agent/internal/session"
 )
@@ -19,12 +22,14 @@ const maxRequestBodySize = 1 << 20 // 1 MB
 type AgentHandler struct {
 	harness  *harness.Harness
 	sessions *session.Store
+	logger   *slog.Logger
 }
 
 func NewAgentHandler(h *harness.Harness, sessions *session.Store) *AgentHandler {
 	return &AgentHandler{
 		harness:  h,
 		sessions: sessions,
+		logger:   slog.Default(),
 	}
 }
 
@@ -33,16 +38,24 @@ func (h *AgentHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sessions", h.ListSessions)
 	mux.HandleFunc("GET /sessions/{sessionID}", h.GetSession)
 	mux.HandleFunc("DELETE /sessions/{sessionID}", h.DeleteSession)
-	mux.HandleFunc("POST /sessions/{sessionID}/approvals/{approvalID}", h.ResolveApproval)
 	mux.HandleFunc("POST /sessions/{sessionID}/workspace", h.SetWorkspace)
 	mux.HandleFunc("POST /sessions", h.CreateSession)
 	mux.HandleFunc("POST /ask", h.Ask)
 	mux.HandleFunc("POST /chat/completion", h.Ask)
+
+	// SSE streaming endpoint
+	mux.HandleFunc("POST /sessions/{sessionID}/stream", h.StreamTask)
+	mux.HandleFunc("POST /sessions/{sessionID}/approve", h.ApproveAction)
+	mux.HandleFunc("POST /sessions/{sessionID}/reject", h.RejectAction)
 }
+
+// ---- Health ----
 
 func (h *AgentHandler) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// ---- REST /ask ----
 
 func (h *AgentHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	var req AskRequest
@@ -69,30 +82,21 @@ func (h *AgentHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		result = h.harness.RunWithMemory(message, workMemory, sessionWorkspace)
 	})
 
-	if result.LoopResult.PendingAction != nil {
-		state.SetPending(result.LoopResult.PendingAction)
-	}
-
 	writeJSON(w, http.StatusOK, AskResponse{
-		SessionID:     state.ID,
-		Answer:        result.LoopResult.Answer,
-		Iterations:    result.LoopResult.Iterations,
-		StoppedBy:     string(result.LoopResult.StoppedBy),
-		Trace:         result.LoopResult.Trace,
-		PendingAction: result.LoopResult.PendingAction,
+		SessionID:  state.ID,
+		Answer:     result.LoopResult.Answer,
+		Iterations: result.LoopResult.Iterations,
+		StoppedBy:  string(result.LoopResult.StoppedBy),
+		Trace:      result.LoopResult.Trace,
 	})
 }
 
-func (h *AgentHandler) CreateSession(w http.ResponseWriter, r *http.Request) {
-	state := h.sessions.Create()
-	writeJSON(w, http.StatusCreated, SessionResponse{SessionID: state.ID})
-}
+// ---- SSE streaming ----
 
-func (h *AgentHandler) ResolveApproval(w http.ResponseWriter, r *http.Request) {
+func (h *AgentHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
-	approvalID := strings.TrimSpace(r.PathValue("approvalID"))
-	if sessionID == "" || approvalID == "" {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "session ID and approval ID are required"})
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "session ID is required"})
 		return
 	}
 
@@ -101,40 +105,119 @@ func (h *AgentHandler) ResolveApproval(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "session not found"})
 		return
 	}
-	action, ok := state.GetPending(approvalID)
-	if !ok {
-		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "approval not found"})
-		return
-	}
 
-	var req ApprovalRequest
+	var req StreamRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
 		return
 	}
 
-	state.ClearPending(approvalID)
-	var result harness.HarnessExecutionResult
-	sessionWorkspace := state.Workspace()
-	state.WithMemory(func(workMemory *memory.WorkMemory) {
-		if req.Approved {
-			result = h.harness.ContinueWithApprovedAction(action, workMemory, sessionWorkspace)
-		} else {
-			result = h.harness.RecordRejectedAction(action, workMemory)
-		}
-	})
-	if result.LoopResult.PendingAction != nil {
-		state.SetPending(result.LoopResult.PendingAction)
+	message := strings.TrimSpace(req.Message)
+	if message == "" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "message is required"})
+		return
 	}
 
-	writeJSON(w, http.StatusOK, AskResponse{
-		SessionID:     state.ID,
-		Answer:        result.LoopResult.Answer,
-		Iterations:    result.LoopResult.Iterations,
-		StoppedBy:     string(result.LoopResult.StoppedBy),
-		Trace:         result.LoopResult.Trace,
-		PendingAction: result.LoopResult.PendingAction,
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: "streaming not supported"})
+		return
+	}
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Create approval channel BEFORE starting the loop.
+	approvalCh := state.NewApprovalChannel()
+
+	sessionWorkspace := state.Workspace()
+
+	var workMemory *memory.WorkMemory
+	state.WithMemory(func(wm *memory.WorkMemory) {
+		workMemory = wm
 	})
+
+	result := h.harness.RunWithMemoryStreaming(
+		message,
+		workMemory,
+		sessionWorkspace,
+		func(event loop.SSEEvent) { writeSSE(w, flusher, event) },
+		func(action *approval.PendingAction) bool {
+			writeSSE(w, flusher, loop.SSEEvent{
+				Type:   loop.EventApprovalRequired,
+				Tool:   action.Tool,
+				Args:   action.Args,
+				Action: action,
+			})
+			approved := <-approvalCh
+			if approved {
+				h.logger.Info("SSE: user approved", "tool", action.Tool)
+			} else {
+				h.logger.Info("SSE: user rejected", "tool", action.Tool)
+			}
+			return approved
+		},
+	)
+
+	// Send close event — the loop already sent the final EventDone
+	fmt.Fprintf(w, "event: close\ndata: {}\n\n")
+	flusher.Flush()
+
+	h.logger.Info("SSE stream finished",
+		"session", sessionID,
+		"stopped_by", result.LoopResult.StoppedBy,
+		"iterations", result.LoopResult.Iterations,
+	)
+}
+
+// ---- Approval signals for active SSE stream ----
+
+func (h *AgentHandler) ApproveAction(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "session ID is required"})
+		return
+	}
+
+	state, ok := h.sessions.Get(sessionID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "session not found"})
+		return
+	}
+
+	h.logger.Info("SSE approve signal received", "session", sessionID)
+	state.SignalApproval(true)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "approved"})
+}
+
+func (h *AgentHandler) RejectAction(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "session ID is required"})
+		return
+	}
+
+	state, ok := h.sessions.Get(sessionID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "session not found"})
+		return
+	}
+
+	h.logger.Info("SSE reject signal received", "session", sessionID)
+	state.SignalApproval(false)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
+}
+
+// ---- Session management ----
+
+func (h *AgentHandler) CreateSession(w http.ResponseWriter, r *http.Request) {
+	state := h.sessions.Create()
+	writeJSON(w, http.StatusCreated, SessionResponse{SessionID: state.ID})
 }
 
 func (h *AgentHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
@@ -157,14 +240,13 @@ func (h *AgentHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 	snapshot := state.Snapshot(true)
 	messages := visibleMessages(snapshot.Messages)
 	writeJSON(w, http.StatusOK, SessionDetailResponse{
-		ID:             snapshot.ID,
-		SessionID:      snapshot.ID,
-		CreatedAt:      snapshot.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:      snapshot.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		MessageCount:   len(messages),
-		Messages:       messages,
-		PendingActions: snapshot.Pending,
-		Workspace:      snapshot.Workspace,
+		ID:           snapshot.ID,
+		SessionID:    snapshot.ID,
+		CreatedAt:    snapshot.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:    snapshot.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		MessageCount: len(messages),
+		Messages:     messages,
+		Workspace:    snapshot.Workspace,
 	})
 }
 
@@ -218,15 +300,16 @@ func (h *AgentHandler) SetWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	snapshot := state.Snapshot(false)
 	writeJSON(w, http.StatusOK, SessionDetailResponse{
-		ID:             snapshot.ID,
-		SessionID:      snapshot.ID,
-		CreatedAt:      snapshot.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:      snapshot.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		MessageCount:   snapshot.MessageCount,
-		PendingActions: snapshot.Pending,
-		Workspace:      snapshot.Workspace,
+		ID:           snapshot.ID,
+		SessionID:    snapshot.ID,
+		CreatedAt:    snapshot.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:    snapshot.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		MessageCount: snapshot.MessageCount,
+		Workspace:    snapshot.Workspace,
 	})
 }
+
+// ---- helpers ----
 
 func (h *AgentHandler) findOrCreateSession(w http.ResponseWriter, sessionID string) *session.State {
 	if sessionID == "" {
@@ -266,7 +349,24 @@ func visibleMessages(messages []llm.Message) []ChatMessageResponse {
 	return result
 }
 
-// decodeJSON reads and decodes a JSON request body with size limit and strict parsing.
+// ---- SSE frame writer ----
+
+func writeSSE(w http.ResponseWriter, flusher http.Flusher, event loop.SSEEvent) {
+	data, err := json.Marshal(event)
+	if err != nil {
+		slog.Warn("SSE marshal failed", "event_type", event.Type, "error", err)
+		fmt.Fprintf(w, "event: error\ndata: {\"error\":\"marshal failed\"}\n\n")
+		flusher.Flush()
+		return
+	}
+
+	slog.Debug("SSE write", "event_type", event.Type, "bytes", len(data))
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
+	flusher.Flush()
+}
+
+// ---- JSON decode/encode ----
+
 func decodeJSON(r *http.Request, v any) error {
 	defer func() { _ = r.Body.Close() }()
 	r.Body = http.MaxBytesReader(nil, r.Body, maxRequestBodySize)
@@ -280,12 +380,10 @@ func decodeJSON(r *http.Request, v any) error {
 		return fmt.Errorf("invalid JSON request body: %v", err)
 	}
 
-	// Drain remaining body to allow connection reuse
 	_, _ = io.Copy(io.Discard, r.Body)
 	return nil
 }
 
-// writeJSON encodes value, then writes status and body — status goes last to avoid broken responses.
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	data, err := json.Marshal(value)
 	if err != nil {

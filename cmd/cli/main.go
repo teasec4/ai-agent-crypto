@@ -10,19 +10,27 @@ import (
 	"ai-agent/internal/approval"
 	"ai-agent/internal/config"
 	"ai-agent/internal/harness"
+	"ai-agent/internal/loop"
+	"ai-agent/internal/memory"
 )
 
 func main() {
-	cfg, err := config.Load()
-	if err != nil {
-		slog.Error("error loading config", "error", err)
+	if err := run(); err != nil {
+		slog.Error("fatal", "error", err)
 		os.Exit(1)
 	}
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
 	h := harness.New(cfg)
-	session := h.NewAgentSession()
+	mem := memory.NewDefaultWorkMemory()
 
 	scanner := bufio.NewScanner(os.Stdin)
-	fmt.Println("AI Agent ready. Commands: /reset, /approve, /dismiss, Ctrl+C to exit.")
+	fmt.Println("AI Agent ready. Commands: /reset, Ctrl+C to exit.")
 	fmt.Println()
 
 	for scanner.Scan() {
@@ -31,58 +39,49 @@ func main() {
 			continue
 		}
 		if input == "/reset" {
-			session.Reset()
+			mem.Reset()
 			fmt.Println("Agent: контекст сброшен.")
 			fmt.Println()
 			continue
 		}
 
-		if pa := session.PendingAction(); pa != nil {
-			switch input {
-			case "/approve":
-				slog.Info("user approved", "tool", pa.Tool, "id", pa.ID)
-				result := session.Approve()
-				printResult(result)
-				continue
-			case "/dismiss":
-				slog.Info("user dismissed", "tool", pa.Tool, "id", pa.ID)
-				result := session.Reject()
-				printResult(result)
-				continue
-			default:
-				fmt.Printf("Ожидается /approve или /dismiss для действия %q.\n", pa.Tool)
-				fmt.Printf("  %s\n\n", pa.Summary)
-				continue
-			}
-		}
-
 		slog.Info("user input", "input", input)
-		result := session.Run(input)
 
-		for _, iter := range result.LoopResult.Trace {
-			if iter.Outcome == "tool_calls" && len(iter.ToolEvents) > 0 {
-				for _, ev := range iter.ToolEvents {
-					if ev.Error != "" {
-						slog.Warn("tool error", "tool", ev.Tool, "error", ev.Error)
-					}
+		result := h.RunWithMemoryStreaming(
+			input,
+			mem,
+			"",
+			func(event loop.SSEEvent) {
+				switch event.Type {
+				case loop.EventThinking:
+					fmt.Print(".")
+				case loop.EventToolStart:
+					fmt.Printf("\n  → %s...", event.Tool)
+				case loop.EventToolDone:
+					fmt.Print(" ✓")
+				case loop.EventToolError:
+					fmt.Printf(" ✗ (%s)", event.Error)
 				}
-			}
-		}
+			},
+			func(action *approval.PendingAction) bool {
+				printApprovalCard(action)
+				fmt.Print("  > ")
+				if !scanner.Scan() {
+					return false
+				}
+				answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
+				return answer == "y" || answer == "yes" || answer == "да" || answer == "/approve"
+			},
+		)
 
-		printResult(result)
+		fmt.Println()
+		fmt.Printf("Agent: %s\n\n", result.LoopResult.Answer)
 	}
 
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 	}
-}
-
-func printResult(result harness.HarnessExecutionResult) {
-	if pa := result.LoopResult.PendingAction; pa != nil {
-		printApprovalCard(pa)
-		return
-	}
-	fmt.Printf("Agent: %s\n\n", result.LoopResult.Answer)
+	return nil
 }
 
 func printApprovalCard(pa *approval.PendingAction) {
@@ -100,8 +99,7 @@ func printApprovalCard(pa *approval.PendingAction) {
 		}
 	}
 	fmt.Println("├─────────────────────────────────────────────┤")
-	fmt.Println("│  Type  /approve  to confirm")
-	fmt.Println("│  Type  /dismiss  to reject")
+	fmt.Println("│  Type  y/yes/да  to confirm")
+	fmt.Println("│  Type  anything else to reject")
 	fmt.Println("└─────────────────────────────────────────────┘")
-	fmt.Println()
 }

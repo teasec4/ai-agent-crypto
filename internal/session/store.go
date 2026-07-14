@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"ai-agent/internal/approval"
 	"ai-agent/internal/id"
 	"ai-agent/internal/llm"
 	"ai-agent/internal/memory"
@@ -25,19 +24,21 @@ type State struct {
 
 	mu        sync.Mutex
 	memory    *memory.WorkMemory
-	pending   map[string]*approval.PendingAction
 	workspace string
 	onChange  func()
+
+	// approvalCh is used by the SSE streaming loop to wait for user approval.
+	approvalMu sync.Mutex
+	approvalCh chan bool
 }
 
 type Snapshot struct {
-	ID           string                    `json:"id"`
-	CreatedAt    time.Time                 `json:"createdAt"`
-	UpdatedAt    time.Time                 `json:"updatedAt"`
-	MessageCount int                       `json:"messageCount"`
-	Messages     []llm.Message             `json:"messages,omitempty"`
-	Pending      []*approval.PendingAction `json:"pending,omitempty"`
-	Workspace    string                    `json:"workspace,omitempty"`
+	ID           string        `json:"id"`
+	CreatedAt    time.Time     `json:"createdAt"`
+	UpdatedAt    time.Time     `json:"updatedAt"`
+	MessageCount int           `json:"messageCount"`
+	Messages     []llm.Message `json:"messages,omitempty"`
+	Workspace    string        `json:"workspace,omitempty"`
 }
 
 func NewStore() *Store {
@@ -75,7 +76,6 @@ func (store *Store) Create() *State {
 		CreatedAt: now,
 		UpdatedAt: now,
 		memory:    memory.NewDefaultWorkMemory(),
-		pending:   make(map[string]*approval.PendingAction),
 	}
 	store.attachOnChange(state)
 
@@ -140,48 +140,9 @@ func (s *State) WithMemory(fn func(*memory.WorkMemory)) {
 func (s *State) Reset() {
 	s.mu.Lock()
 	s.memory.Reset()
-	s.pending = make(map[string]*approval.PendingAction)
 	s.UpdatedAt = time.Now()
 	s.mu.Unlock()
 	s.changed()
-}
-
-func (s *State) SetPending(action *approval.PendingAction) {
-	if action == nil {
-		return
-	}
-
-	s.mu.Lock()
-	s.pending[action.ID] = action
-	s.UpdatedAt = time.Now()
-	s.mu.Unlock()
-	s.changed()
-}
-
-func (s *State) GetPending(id string) (*approval.PendingAction, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	action, ok := s.pending[id]
-	return action, ok
-}
-
-func (s *State) ClearPending(id string) {
-	s.mu.Lock()
-	delete(s.pending, id)
-	s.UpdatedAt = time.Now()
-	s.mu.Unlock()
-	s.changed()
-}
-
-func (s *State) FirstPending() (*approval.PendingAction, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for _, action := range s.pending {
-		return action, true
-	}
-	return nil, false
 }
 
 func (s *State) SetWorkspace(path string) {
@@ -207,7 +168,6 @@ func (s *State) Snapshot(includeMessages bool) Snapshot {
 		CreatedAt:    s.CreatedAt,
 		UpdatedAt:    s.UpdatedAt,
 		MessageCount: s.memory.Len(),
-		Pending:      pendingSlice(s.pending),
 		Workspace:    s.workspace,
 	}
 
@@ -253,19 +213,11 @@ func (s *State) PersistedState() PersistedState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	pending := make([]*approval.PendingAction, 0, len(s.pending))
-	for _, action := range s.pending {
-		copyAction := *action
-		copyAction.Args = copyMap(action.Args)
-		pending = append(pending, &copyAction)
-	}
-
 	return PersistedState{
 		ID:        s.ID,
 		CreatedAt: s.CreatedAt,
 		UpdatedAt: s.UpdatedAt,
 		Messages:  append([]llm.Message(nil), s.memory.Messages...),
-		Pending:   pending,
 		Workspace: s.workspace,
 	}
 }
@@ -276,48 +228,13 @@ func stateFromPersisted(persisted PersistedState) *State {
 		messages = memory.NewDefaultWorkMemory().Messages
 	}
 
-	pending := make(map[string]*approval.PendingAction)
-	for _, action := range persisted.Pending {
-		if action == nil || action.ID == "" {
-			continue
-		}
-		copyAction := *action
-		copyAction.Args = copyMap(action.Args)
-		pending[action.ID] = &copyAction
-	}
-
 	return &State{
 		ID:        persisted.ID,
 		CreatedAt: persisted.CreatedAt,
 		UpdatedAt: persisted.UpdatedAt,
 		memory:    &memory.WorkMemory{Messages: messages},
-		pending:   pending,
 		workspace: persisted.Workspace,
 	}
-}
-
-func pendingSlice(input map[string]*approval.PendingAction) []*approval.PendingAction {
-	result := make([]*approval.PendingAction, 0, len(input))
-	for _, action := range input {
-		copyAction := *action
-		copyAction.Args = copyMap(action.Args)
-		result = append(result, &copyAction)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].CreatedAt.Before(result[j].CreatedAt)
-	})
-	return result
-}
-
-func copyMap(input map[string]any) map[string]any {
-	if input == nil {
-		return nil
-	}
-	result := make(map[string]any, len(input))
-	for key, value := range input {
-		result[key] = value
-	}
-	return result
 }
 
 func (s *State) changed() {
@@ -326,9 +243,34 @@ func (s *State) changed() {
 	}
 }
 
+// NewApprovalChannel creates a fresh buffered channel for SSE approval.
+func (s *State) NewApprovalChannel() chan bool {
+	s.approvalMu.Lock()
+	defer s.approvalMu.Unlock()
+	s.approvalCh = make(chan bool, 1)
+	return s.approvalCh
+}
+
+// SignalApproval sends a value to the active approval channel, if any.
+// Safe to call multiple times; if no channel is active the call is silently ignored.
+func (s *State) SignalApproval(approved bool) {
+	s.approvalMu.Lock()
+	ch := s.approvalCh
+	if ch == nil {
+		s.approvalMu.Unlock()
+		return
+	}
+	s.approvalCh = nil
+	s.approvalMu.Unlock()
+
+	select {
+	case ch <- approved:
+	default:
+	}
+}
+
 const sessionTTL = 1 * time.Hour
 
-// CleanupExpired removes sessions that have been inactive for longer than sessionTTL.
 func (store *Store) CleanupExpired() int {
 	store.mu.Lock()
 	cutoff := time.Now().Add(-sessionTTL)
@@ -350,8 +292,6 @@ func (store *Store) CleanupExpired() int {
 	return removed
 }
 
-// StartCleanup runs periodic session expiration in the background.
-// Call this once after store creation. The returned stop function cancels the cleanup loop.
 func (store *Store) StartCleanup(interval time.Duration) (stop func()) {
 	ticker := time.NewTicker(interval)
 	done := make(chan struct{})

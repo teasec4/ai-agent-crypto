@@ -1,7 +1,6 @@
 package session
 
 import (
-	"ai-agent/internal/approval"
 	"ai-agent/internal/llm"
 	"time"
 )
@@ -14,10 +13,9 @@ type Storage interface {
 }
 
 type PersistedState struct {
-	ID        string                    `json:"id"`
-	CreatedAt time.Time                 `json:"createdAt"`
-	UpdatedAt time.Time                 `json:"updatedAt"`
-	Messages  []llm.Message             `json:"messages"`
-	Pending   []*approval.PendingAction `json:"pending,omitempty"`
-	Workspace string                    `json:"workspace,omitempty"`
+	ID        string        `json:"id"`
+	CreatedAt time.Time     `json:"createdAt"`
+	UpdatedAt time.Time     `json:"updatedAt"`
+	Messages  []llm.Message `json:"messages"`
+	Workspace string        `json:"workspace,omitempty"`
 }
