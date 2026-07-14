@@ -12,6 +12,34 @@ import (
 	"ai-agent/internal/planner"
 )
 
+// ---- streaming events ----
+
+type SSEEventType string
+
+const (
+	EventThinking         SSEEventType = "thinking"
+	EventToolStart        SSEEventType = "tool_start"
+	EventToolDone         SSEEventType = "tool_done"
+	EventToolError        SSEEventType = "tool_error"
+	EventApprovalRequired SSEEventType = "approval_required"
+	EventDone             SSEEventType = "done"
+)
+
+type SSEEvent struct {
+	Type   SSEEventType            `json:"type"`
+	Tool   string                  `json:"tool,omitempty"`
+	Args   map[string]any          `json:"args,omitempty"`
+	Result string                  `json:"result,omitempty"`
+	Error  string                  `json:"error,omitempty"`
+	Answer string                  `json:"answer,omitempty"`
+	Action *approval.PendingAction `json:"action,omitempty"`
+}
+
+// ApprovalFn is called when a tool requires user approval.
+type ApprovalFn func(action *approval.PendingAction) bool
+
+// ---- trace types ----
+
 type ToolEvent struct {
 	Tool   string         `json:"tool"`
 	Args   map[string]any `json:"args"`
@@ -63,4 +91,13 @@ type LoopRequest struct {
 	Workspace     string
 	MaxIterations int       // 0 means use DefaultMaxIterations
 	Deadline      time.Time // zero means no deadline
+
+	// OnApproval is called when a tool requires user confirmation.
+	// If nil and AutoApprove is false, the loop falls back to the legacy
+	// StoppedByApproval behaviour (returning PendingAction).
+	OnApproval ApprovalFn
+
+	// OnEvent is called for every streaming event.
+	// If nil, no events are emitted.
+	OnEvent func(SSEEvent)
 }

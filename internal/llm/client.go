@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -14,6 +15,7 @@ type Client struct {
 	Temperature float64
 	MaxTokens   int
 	HTTPClient  *http.Client
+	Logger      *slog.Logger
 }
 
 func NewClientWithTimeout(apiKey string, baseURL string, model string, temperature float64, maxTokens int, timeout time.Duration) *Client {
@@ -27,21 +29,31 @@ func NewClientWithTimeout(apiKey string, baseURL string, model string, temperatu
 		HTTPClient: &http.Client{
 			Timeout: timeout,
 		},
+		Logger: slog.Default(),
 	}
 }
 
-func (c *Client) Chat(messages []Message) (string, error) {
+// Chat sends messages with optional tools and returns a parsed ChatResponse.
+func (c *Client) Chat(messages []Message, tools []ToolDefinition) (*ChatResponse, error) {
 	reqBody := Request{
 		Model:       c.Model.Model,
 		Messages:    messages,
+		Tools:       tools,
 		Temperature: c.Temperature,
 		MaxTokens:   c.MaxTokens,
 	}
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+
+	c.Logger.Debug("llm request",
+		"model", c.Model.Model,
+		"messages", len(messages),
+		"tools", len(tools),
+		"body_size", len(body),
+	)
 
 	req, err := http.NewRequest(
 		"POST",
@@ -49,7 +61,7 @@ func (c *Client) Chat(messages []Message) (string, error) {
 		bytes.NewBuffer(body),
 	)
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+c.Model.ApiKey)
@@ -58,29 +70,42 @@ func (c *Client) Chat(messages []Message) (string, error) {
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("http request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var res Response
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
+		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	// Check for API error
 	if res.Error != nil && res.Error.Message != "" {
-		return "", fmt.Errorf("API error: %s", res.Error.Message)
+		return nil, fmt.Errorf("API error: %s", res.Error.Message)
 	}
 
 	// Check if we have any choices
 	if len(res.Choices) == 0 {
-		return "", fmt.Errorf("no choices in API response")
+		return nil, fmt.Errorf("no choices in API response")
 	}
 
-	return res.Choices[0].Message.Content, nil
+	choice := res.Choices[0]
+	chatResp := &ChatResponse{
+		Content:      choice.Message.Content,
+		FinishReason: choice.FinishReason,
+		ToolCalls:    choice.Message.ToolCalls,
+	}
+
+	c.Logger.Debug("llm response",
+		"finish_reason", choice.FinishReason,
+		"content_len", len(choice.Message.Content),
+		"tool_calls", len(choice.Message.ToolCalls),
+	)
+
+	return chatResp, nil
 }

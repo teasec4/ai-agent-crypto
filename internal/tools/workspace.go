@@ -139,7 +139,17 @@ func (t *ListDirectoryTool) Name() string {
 }
 
 func (t *ListDirectoryTool) Description() string {
-	return "List files and directories in the workspace. Parameters: path (relative directory, default: .), max_entries (default: 200). Read-only."
+	return "List files and directories in the workspace."
+}
+
+func (t *ListDirectoryTool) Schema() ToolSchema {
+	return ToolSchema{
+		Type: "object",
+		Properties: map[string]Parameter{
+			"path":        {Type: "string", Description: "Relative directory path (default: .)"},
+			"max_entries": {Type: "integer", Description: "Max entries to return (default: 200)"},
+		},
+	}
 }
 
 func (t *ListDirectoryTool) Run(params map[string]interface{}) (string, error) {
@@ -202,7 +212,18 @@ func (t *ReadFileTool) Name() string {
 }
 
 func (t *ReadFileTool) Description() string {
-	return "Read a text file from the workspace. Parameters: path (relative file path), max_bytes (default: 81920). Read-only. Secrets such as .env are blocked."
+	return "Read a text file from the workspace."
+}
+
+func (t *ReadFileTool) Schema() ToolSchema {
+	return ToolSchema{
+		Type: "object",
+		Properties: map[string]Parameter{
+			"path":      {Type: "string", Description: "Relative file path (required)"},
+			"max_bytes": {Type: "integer", Description: "Max bytes to read (default: 81920)"},
+		},
+		Required: []string{"path"},
+	}
 }
 
 func (t *ReadFileTool) Run(params map[string]interface{}) (string, error) {
@@ -283,7 +304,18 @@ func (t *FindFilesTool) Name() string {
 }
 
 func (t *FindFilesTool) Description() string {
-	return "Find workspace files by glob pattern. Parameters: pattern (e.g. **/*.go), max_matches (default: 200). Read-only."
+	return "Find workspace files by glob pattern."
+}
+
+func (t *FindFilesTool) Schema() ToolSchema {
+	return ToolSchema{
+		Type: "object",
+		Properties: map[string]Parameter{
+			"pattern":     {Type: "string", Description: "Glob pattern (e.g. **/*.go) (required)"},
+			"max_matches": {Type: "integer", Description: "Max matches to return (default: 200)"},
+		},
+		Required: []string{"pattern"},
+	}
 }
 
 func (t *FindFilesTool) Run(params map[string]interface{}) (string, error) {
@@ -396,7 +428,19 @@ func (t *SearchTextTool) Name() string {
 }
 
 func (t *SearchTextTool) Description() string {
-	return "Search text in workspace files. Parameters: query (plain substring), path (directory, default: .), max_hits (default: 100). Read-only."
+	return "Search text in workspace files."
+}
+
+func (t *SearchTextTool) Schema() ToolSchema {
+	return ToolSchema{
+		Type: "object",
+		Properties: map[string]Parameter{
+			"query":    {Type: "string", Description: "Plain text substring to search (required)"},
+			"path":     {Type: "string", Description: "Directory to search (default: .)"},
+			"max_hits": {Type: "integer", Description: "Max results to return (default: 100)"},
+		},
+		Required: []string{"query"},
+	}
 }
 
 func (t *SearchTextTool) Run(params map[string]interface{}) (string, error) {

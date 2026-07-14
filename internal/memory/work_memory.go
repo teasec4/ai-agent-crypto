@@ -11,14 +11,13 @@ const (
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
 	RoleSystem    = "system"
+	RoleTool      = "tool"
 
 	ToolObservationPrefix = "Tool observation: "
 
-	SystemDefaultPrompt = `
-		You are a helpful assistant with access to tools.
-		Use tools whenever they help you give a more accurate answer.
-		When you have enough information, respond directly and concisely.
-	`
+	SystemDefaultPrompt = "You are a helpful assistant with access to tools. " +
+		"Use tools whenever they help you give a more accurate answer. " +
+		"When you have enough information, respond directly and concisely."
 
 	DefaultCompactAt = 30
 	CompactMinGap    = 10 // minimum new messages before next compaction
@@ -26,18 +25,17 @@ const (
 	// SummarizePrompt instructs the LLM to condense older conversation history.
 	SummarizePrompt = `You are a conversation summarizer. Condense the following conversation into 1-2 sentences.
 
-		Preserve:
-		- The user's intents and what they asked about
-		- Key data retrieved from tools (prices, statuses, results, errors)
-		- The final answer or outcome given to the user
-		- Any decisions or conclusions reached
+Preserve:
+- The user's intents and what they asked about
+- Key data retrieved from tools (prices, statuses, results, errors)
+- The final answer or outcome given to the user
+- Any decisions or conclusions reached
 
-		Discard:
-		- Verbose tool logs, repetitive formatting, truncation markers
-		- Redundant or obvious details
+Discard:
+- Verbose tool logs, repetitive formatting, truncation markers
+- Redundant or obvious details
 
-		Output only the summary, no explanations.
-	`
+Output only the summary, no explanations.`
 
 	CompactKeepRatio = 2 // keep at most len(Messages)/CompactKeepRatio messages after compaction
 )
@@ -55,6 +53,7 @@ func NewDefaultWorkMemory() *WorkMemory {
 func (h *WorkMemory) Reset() {
 	h.Messages = h.Messages[:0]
 	h.Messages = append(h.Messages, defaultSystemMessage())
+	h.lastCompactedLen = 0
 }
 
 func (h *WorkMemory) AddUser(content string) {
@@ -68,6 +67,34 @@ func (h *WorkMemory) AddAssistant(content string) {
 	h.Messages = append(h.Messages, llm.Message{Role: RoleAssistant, Content: content})
 }
 
+// AddAssistantToolCall adds an assistant message with a tool_call for native tool calling.
+func (h *WorkMemory) AddAssistantToolCall(toolCallID, toolName, arguments string) {
+	h.Messages = append(h.Messages, llm.Message{
+		Role: RoleAssistant,
+		ToolCalls: []llm.ToolCall{
+			{
+				ID:   toolCallID,
+				Type: "function",
+				Function: llm.FunctionCall{
+					Name:      toolName,
+					Arguments: arguments,
+				},
+			},
+		},
+	})
+}
+
+// AddToolResult adds a tool role message (native tool calling format).
+func (h *WorkMemory) AddToolResult(toolCallID, content string) {
+	h.Messages = append(h.Messages, llm.Message{
+		Role:       RoleTool,
+		ToolCallID: toolCallID,
+		Content:    content,
+	})
+}
+
+// AddTool adds a tool observation as a user message (legacy format).
+// Kept for backward compatibility.
 func (h *WorkMemory) AddTool(content string) {
 	if content == "" {
 		return
@@ -87,8 +114,6 @@ func FormatToolResult(action string, result string, err error, prefix string) st
 }
 
 // CompactIfNeeded checks if the history exceeds the threshold and compacts it.
-// Uses LLM summarization to preserve context; falls back to simple trimming on error.
-// Respects CompactMinGap to avoid compacting too frequently.
 func (h *WorkMemory) CompactIfNeeded(llmClient llm.LlmClient) {
 	currentLen := len(h.Messages)
 	if currentLen <= DefaultCompactAt {
@@ -109,7 +134,6 @@ func (h *WorkMemory) CompactIfNeeded(llmClient llm.LlmClient) {
 
 	summary, err := h.summarize(llmClient, oldMessages)
 	if err != nil {
-		// Fallback: build a simple text summary from old messages instead of discarding them
 		fallbackSummary := buildFallbackSummary(oldMessages)
 		summaryMessage := llm.Message{
 			Role:    RoleSystem,
@@ -120,7 +144,6 @@ func (h *WorkMemory) CompactIfNeeded(llmClient llm.LlmClient) {
 		return
 	}
 
-	// Replace old messages with a single system summary
 	summaryMessage := llm.Message{
 		Role:    RoleSystem,
 		Content: fmt.Sprintf("Previous conversation summary: %s", summary),
@@ -129,7 +152,6 @@ func (h *WorkMemory) CompactIfNeeded(llmClient llm.LlmClient) {
 	h.lastCompactedLen = currentLen
 }
 
-// summarize sends old messages to the LLM for condensation.
 func (h *WorkMemory) summarize(llmClient llm.LlmClient, messages []llm.Message) (string, error) {
 	var sb strings.Builder
 	for _, m := range messages {
@@ -141,27 +163,39 @@ func (h *WorkMemory) summarize(llmClient llm.LlmClient, messages []llm.Message) 
 		{Role: "user", Content: sb.String()},
 	}
 
-	return llmClient.Chat(msgs)
+	resp, err := llmClient.Chat(msgs, nil)
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
 }
-
-// buildFallbackSummary creates a simple text summary when LLM summarization fails.
-// It keeps the user intents and discards verbose tool outputs.
 func buildFallbackSummary(messages []llm.Message) string {
 	var userMsgs []string
 	var lastAssistant string
+	var toolResults []string
 	for _, m := range messages {
 		switch m.Role {
 		case RoleUser:
 			content := strings.TrimSpace(m.Content)
 			if !strings.HasPrefix(content, ToolObservationPrefix) {
-				// Truncate long user messages
 				if len(content) > 300 {
 					content = content[:300] + "..."
 				}
 				userMsgs = append(userMsgs, content)
 			}
 		case RoleAssistant:
+			if len(m.ToolCalls) > 0 {
+				for _, tc := range m.ToolCalls {
+					toolResults = append(toolResults, fmt.Sprintf("called tool: %s(%s)", tc.Function.Name, tc.Function.Arguments))
+				}
+			}
 			lastAssistant = strings.TrimSpace(m.Content)
+		case RoleTool:
+			content := strings.TrimSpace(m.Content)
+			if len(content) > 200 {
+				content = content[:200] + "..."
+			}
+			toolResults = append(toolResults, fmt.Sprintf("tool result [%s]: %s", m.ToolCallID, content))
 		}
 	}
 
@@ -169,6 +203,12 @@ func buildFallbackSummary(messages []llm.Message) string {
 	if len(userMsgs) > 0 {
 		sb.WriteString("User requested: ")
 		sb.WriteString(strings.Join(userMsgs, "; "))
+	}
+	for _, tr := range toolResults {
+		if sb.Len() > 0 {
+			sb.WriteString(". ")
+		}
+		sb.WriteString(tr)
 	}
 	if lastAssistant != "" {
 		if sb.Len() > 0 {

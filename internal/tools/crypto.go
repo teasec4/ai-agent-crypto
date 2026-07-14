@@ -36,7 +36,19 @@ func (t *CryptoTool) Name() string {
 
 // Description returns a human-readable description of the tool.
 func (t *CryptoTool) Description() string {
-	return "Get the current price of a cryptocurrency. Parameters: query (crypto name, e.g. bitcoin, ethereum), currency (fiat currency, e.g. usd, eur)"
+	return "Get the current price of a cryptocurrency."
+}
+
+// Schema returns the JSON schema for tool parameters.
+func (t *CryptoTool) Schema() ToolSchema {
+	return ToolSchema{
+		Type: "object",
+		Properties: map[string]Parameter{
+			"query":    {Type: "string", Description: "Cryptocurrency name (e.g. bitcoin, ethereum) (required)"},
+			"currency": {Type: "string", Description: "Fiat currency (e.g. usd, eur, default: usd)"},
+		},
+		Required: []string{"query"},
+	}
 }
 
 // Run executes the crypto price check.

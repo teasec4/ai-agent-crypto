@@ -2,6 +2,7 @@ package handler
 
 import (
 	"ai-agent/internal/approval"
+	"ai-agent/internal/llm"
 	"ai-agent/internal/loop"
 )
 
@@ -43,9 +44,10 @@ type SessionDetailResponse struct {
 }
 
 type ChatMessageResponse struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-	Text    string `json:"text"`
+	Role      string            `json:"role"`
+	Content   string            `json:"content"`
+	ToolCalls []llm.ToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 type ErrorResponse struct {

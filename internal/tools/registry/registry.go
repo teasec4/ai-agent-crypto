@@ -1,10 +1,12 @@
 package registry
 
 import (
-	"ai-agent/internal/tools"
 	"fmt"
 	"sort"
 	"strings"
+
+	"ai-agent/internal/llm"
+	"ai-agent/internal/tools"
 )
 
 // Registry holds all available tools and provides lookup by name.
@@ -33,13 +35,57 @@ func (r *Registry) Get(name string) tools.Tool {
 	return r.tools[name]
 }
 
+// ToolDefinitions returns the list of LLM tool definitions for all registered tools.
+func (r *Registry) ToolDefinitions() []llm.ToolDefinition {
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	defs := make([]llm.ToolDefinition, 0, len(names))
+	for _, name := range names {
+		t := r.tools[name]
+		schema := t.Schema()
+		defs = append(defs, llm.ToolDefinition{
+			Type: "function",
+			Function: llm.FunctionDefinition{
+				Name:        name,
+				Description: t.Description(),
+				Parameters: &llm.JSONSchema{
+					Type:       schema.Type,
+					Properties: toolPropsToLLM(schema.Properties),
+					Required:   schema.Required,
+				},
+			},
+		})
+	}
+	return defs
+}
+
+func toolPropsToLLM(props map[string]tools.Parameter) map[string]llm.Property {
+	result := make(map[string]llm.Property, len(props))
+	for k, v := range props {
+		p := llm.Property{
+			Type:        v.Type,
+			Description: v.Description,
+		}
+		if v.Items != nil {
+			p.Items = &llm.Property{
+				Type:        v.Items.Type,
+				Description: v.Items.Description,
+			}
+		}
+		result[k] = p
+	}
+	return result
+}
+
 // List returns a formatted string of all registered tools with their descriptions.
-// This should be included in the planner prompt.
 func (r *Registry) List() string {
 	var sb strings.Builder
 	sb.WriteString("Available tools:\n")
 
-	// Sort for deterministic output
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
 		names = append(names, name)

@@ -32,7 +32,20 @@ func (t *CommandTool) Name() string {
 }
 
 func (t *CommandTool) Description() string {
-	return "Run an allowlisted non-interactive command in the workspace. Parameters: command (go, git, ls, pwd), args (array of strings), cwd (relative directory, default: .), timeout_seconds (default: 60), max_bytes (default: 122880). Requires user approval. Shell operators and raw shell are not supported."
+	return "Run an allowlisted non-interactive command in the workspace."
+}
+
+func (t *CommandTool) Schema() ToolSchema {
+	return ToolSchema{
+		Type: "object",
+		Properties: map[string]Parameter{
+			"command":         {Type: "string", Description: "Command to run (go, git, ls, pwd) (required)"},
+			"args":            {Type: "array", Description: "Command arguments", Items: &Parameter{Type: "string"}},
+			"cwd":             {Type: "string", Description: "Working directory (default: .)"},
+			"timeout_seconds": {Type: "integer", Description: "Timeout in seconds (default: 60)"},
+		},
+		Required: []string{"command"},
+	}
 }
 
 func (t *CommandTool) RequiresApproval(params map[string]interface{}) bool {

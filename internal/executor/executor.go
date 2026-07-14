@@ -70,11 +70,18 @@ func (e *ToolExecutor) RequiresApproval(plan planner.PlanResult) bool {
 	return ok && aware.RequiresApproval(plan.Parameters)
 }
 
-func (e *ToolExecutor) PendingAction(id string, plan planner.PlanResult) (*approval.PendingAction, error) {
+func (e *ToolExecutor) PendingAction(id string, plan planner.PlanResult, workspace string) (*approval.PendingAction, error) {
 	tool := e.registry.Get(plan.Action)
 	if tool == nil {
 		e.logger.Error("pending action: tool not found", "action", plan.Action)
 		return nil, fmt.Errorf("no tool found for action %q", plan.Action)
+	}
+
+	// Set workspace before preview — Preview() may need to read files for diff.
+	if workspace != "" {
+		if wt, ok := tool.(tools.WorkspaceTool); ok {
+			wt.SetRoot(workspace)
+		}
 	}
 
 	aware, ok := tool.(tools.ApprovalAwareTool)

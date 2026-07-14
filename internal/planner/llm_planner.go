@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"ai-agent/internal/llm"
-	"ai-agent/internal/memory"
 	"ai-agent/internal/tools/registry"
 )
 
@@ -31,182 +30,107 @@ func (p *LLMPlanner) SetLogger(logger *slog.Logger) {
 }
 
 // Plan uses the LLM to determine the next action.
+// Tools are passed natively via the API's tools parameter.
 func (p *LLMPlanner) Plan(history []llm.Message) (PlanResult, error) {
+	tools := p.registry.ToolDefinitions()
 	messages := p.buildMessages(history)
 
-	p.logger.Debug("llm chat request",
+	p.logger.Debug("planner request",
 		"messages", len(messages),
+		"tools", len(tools),
 		"last_role", lastRole(history),
 	)
 
-	response, err := p.llmClient.Chat(messages)
+	chatResp, err := p.llmClient.Chat(messages, tools)
 	if err != nil {
-		p.logger.Error("llm chat failed", "error", err.Error())
+		p.logger.Error("planner: llm chat failed", "error", err.Error())
 		return PlanResult{}, fmt.Errorf("llm planning failed: %w", err)
 	}
 
-	rawResponse := response
-	response = cleanJSONResponse(response)
-
-	p.logger.Debug("llm chat response",
-		"raw_bytes", len(rawResponse),
-		"cleaned_bytes", len(response),
-		"is_json", looksLikeJSON(response),
+	p.logger.Info("planner response",
+		"finish_reason", chatResp.FinishReason,
+		"tool_calls", len(chatResp.ToolCalls),
+		"content_len", len(chatResp.Content),
 	)
 
-	var planResponse PlanResult
-	if err := json.Unmarshal([]byte(response), &planResponse); err != nil {
-		if reply, ok := plainReplyFallback(history, response); ok {
-			p.logger.Info("planner fallback: plain reply accepted as answer",
-				"reply_bytes", len(reply),
-				"after_tool_obs", lastMessageIsToolObservation(history),
+	// Handle tool calls from the LLM
+	if len(chatResp.ToolCalls) > 0 {
+		tc := chatResp.ToolCalls[0]
+		params := make(map[string]interface{})
+		if tc.Function.Arguments != "" {
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &params); err != nil {
+				p.logger.Warn("planner: failed to parse tool arguments as JSON",
+					"tool", tc.Function.Name,
+					"arguments", truncateForLog(tc.Function.Arguments, 200),
+					"error", err.Error(),
+				)
+			}
+		}
+
+		if !p.registry.IsValid(tc.Function.Name) {
+			p.logger.Error("planner: LLM called unknown tool",
+				"tool", tc.Function.Name,
 			)
-			return PlanResult{
-				Action:     ActionMessage,
-				Parameters: map[string]interface{}{},
-				Reply:      reply,
-			}, nil
+			return PlanResult{}, fmt.Errorf("llm called unknown tool %q", tc.Function.Name)
 		}
-		p.logger.Error("planner JSON parse failed",
-			"response", truncateForLog(response, 200),
-			"last_role", lastRole(history),
-			"error", err.Error(),
+
+		p.logger.Info("planner: tool call decided",
+			"tool", tc.Function.Name,
+			"tool_call_id", tc.ID,
+			"params", params,
 		)
-		return PlanResult{}, fmt.Errorf("failed to parse planner JSON %q: %w", response, err)
+
+		return PlanResult{
+			Action:     tc.Function.Name,
+			Parameters: params,
+			ToolCallID: tc.ID,
+		}, nil
 	}
 
-	p.logger.Info("planner decision",
-		"action", planResponse.Action,
-		"params_count", len(planResponse.Parameters),
-		"reply_bytes", len(planResponse.Reply),
-		"last_role", lastRole(history),
+	// Handle text response
+	content := strings.TrimSpace(chatResp.Content)
+
+	// Detect "unknown" / refusal
+	if content == "" || isRefusal(content) {
+		p.logger.Warn("planner: LLM returned empty or refusal", "content", truncateForLog(content, 120))
+		return PlanResult{
+			Action: ActionUnknown,
+			Parameters: map[string]interface{}{
+				"reason": content,
+			},
+		}, nil
+	}
+
+	p.logger.Info("planner: message response",
+		"reply_len", len(content),
 	)
 
-	if planResponse.Action == "" {
-		p.logger.Error("planner returned empty action")
-		return PlanResult{}, fmt.Errorf("planner returned empty action")
-	}
-
-	if planResponse.Action != ActionMessage &&
-		planResponse.Action != ActionUnknown &&
-		!p.registry.IsValid(planResponse.Action) {
-		p.logger.Error("planner returned unknown action",
-			"action", planResponse.Action,
-		)
-		return PlanResult{}, fmt.Errorf("planner returned unknown action %q", planResponse.Action)
-	}
-
-	if planResponse.Action == ActionMessage && strings.TrimSpace(planResponse.Reply) == "" {
-		p.logger.Error("planner returned message action without reply")
-		return PlanResult{}, fmt.Errorf("planner returned message action without reply")
-	}
-
-	if planResponse.Parameters == nil {
-		planResponse.Parameters = make(map[string]interface{})
-	}
-
-	logAttrs := []any{"action", planResponse.Action}
-	if planResponse.Action != ActionMessage && planResponse.Action != ActionUnknown {
-		logAttrs = append(logAttrs, "params", planResponse.Parameters)
-	}
-	p.logger.Info("planner parsed plan", logAttrs...)
-
-	return planResponse, nil
+	return PlanResult{
+		Action: ActionMessage,
+		Reply:  content,
+	}, nil
 }
 
-func cleanJSONResponse(response string) string {
-	response = strings.TrimSpace(response)
-	response = strings.TrimPrefix(response, "```json")
-	response = strings.TrimPrefix(response, "```")
-	response = strings.TrimSuffix(response, "```")
-	return strings.TrimSpace(response)
-}
-
-// plainReplyFallback accepts a non-JSON LLM response as a direct answer
-// only when the last message is a tool observation (the LLM is expected to
-// respond in natural language to tool results).
-func plainReplyFallback(history []llm.Message, response string) (string, bool) {
-	response = strings.TrimSpace(response)
-	if response == "" {
-		return "", false
-	}
-
-	// Only accept plain text when the LLM is responding to tool output.
-	// Otherwise the LLM is expected to return valid JSON.
-	if !lastMessageIsToolObservation(history) {
-		return "", false
-	}
-
-	return cleanReplyAfterTool(response), true
-}
-
-func lastMessageIsToolObservation(history []llm.Message) bool {
-	for i := len(history) - 1; i >= 0; i-- {
-		content := strings.TrimSpace(history[i].Content)
-		if content == "" {
-			continue
-		}
-		return strings.HasPrefix(content, memory.ToolObservationPrefix)
-	}
-	return false
-}
-
-func cleanReplyAfterTool(response string) string {
-	if !strings.HasPrefix(response, memory.ToolObservationPrefix) {
-		return response
-	}
-
-	parts := strings.SplitN(response, "\n\n", 2)
-	if len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
-		return strings.TrimSpace(parts[1])
-	}
-
-	lines := strings.Split(response, "\n")
-	if len(lines) > 1 && strings.TrimSpace(strings.Join(lines[1:], "\n")) != "" {
-		return strings.TrimSpace(strings.Join(lines[1:], "\n"))
-	}
-
-	return response
-}
-
-// buildMessages constructs the LLM messages array for planning.
+// buildMessages constructs the LLM messages array.
 func (p *LLMPlanner) buildMessages(history []llm.Message) []llm.Message {
-	toolList := p.registry.List()
-	systemPrompt := fmt.Sprintf(`You are a planner for an AI agent. Your job is to analyze the user's request and decide the next action.
+	systemPrompt := `You are an AI coding assistant with access to tools. When the user asks you to do something:
 
-	Available actions:
-	- "message": answer directly without a tool
-	- "unknown": use only when no available tool or direct answer fits the request
-	- any registered tool listed below
+1. If you have all the information needed, answer directly.
+2. If you need to read files, search code, check git status, or run commands — use the available tools.
+3. Always respond in the same language as the user.
+4. After completing a task, summarize briefly in 1-2 sentences.
+5. If a task is impossible with the available tools, say so clearly.
 
-	%s
-
-	Return ONLY valid JSON, no markdown.
-	Messages that start with "Tool observation:" are tool results for you to use. Do not copy that prefix into your reply.
-
-	For a tool call:
-	{
-	  "action": "tool_name",
-	  "parameters": { "key": "value" }
-	}
-
-	For a direct answer:
-	{
-	  "action": "message",
-	  "reply": "your answer"
-	}
-
-	For an unsupported or unclear request:
-	{
-	  "action": "unknown",
-	  "parameters": { "reason": "why no available action fits" }
-	}
-	`, toolList)
+You have access to the following tool categories:
+- File operations: read, write, edit, search, list directories
+- Git operations: status, diff, log, branch info
+- Command execution: go, git, ls, pwd
+- Crypto: cryptocurrency price lookups`
 
 	messages := []llm.Message{{Role: "system", Content: systemPrompt}}
 	for _, msg := range history {
-		// Skip the memory's default system prompt — our planner prompt replaces it.
-		if msg.Role == "system" && msg.Content == memory.SystemDefaultPrompt {
+		// Skip the memory's default system prompt — our planner replaces it
+		if msg.Role == "system" && strings.Contains(msg.Content, "helpful assistant") {
 			continue
 		}
 		messages = append(messages, msg)
@@ -214,16 +138,30 @@ func (p *LLMPlanner) buildMessages(history []llm.Message) []llm.Message {
 	return messages
 }
 
+func isRefusal(content string) bool {
+	lower := strings.ToLower(content)
+	refusals := []string{
+		"i cannot", "i can't", "i'm not able", "i am not able",
+		"я не могу", "я не в состоянии", "недостаточно информации",
+		"i don't have", "no tool",
+	}
+	for _, r := range refusals {
+		if strings.Contains(lower, r) {
+			return true
+		}
+	}
+	// If it's very short and sounds like confusion
+	if len(content) < 15 && strings.Contains(lower, "?") {
+		return true
+	}
+	return false
+}
+
 func lastRole(history []llm.Message) string {
 	if len(history) == 0 {
 		return "none"
 	}
 	return history[len(history)-1].Role
-}
-
-func looksLikeJSON(s string) bool {
-	s = strings.TrimSpace(s)
-	return strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")
 }
 
 func truncateForLog(s string, limit int) string {

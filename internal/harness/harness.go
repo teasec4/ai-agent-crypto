@@ -1,9 +1,11 @@
 package harness
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"ai-agent/internal/approval"
@@ -17,6 +19,8 @@ import (
 	"ai-agent/internal/tools"
 	"ai-agent/internal/tools/registry"
 )
+
+const defaultLoopTimeout = 3 * time.Minute
 
 type Harness struct {
 	llmClient   llm.LlmClient
@@ -35,6 +39,7 @@ type HarnessExecutionResult struct {
 type AgentSession struct {
 	harness       *Harness
 	memory        *memory.WorkMemory
+	workspace     string
 	pendingAction *approval.PendingAction
 }
 
@@ -97,17 +102,21 @@ func (h *Harness) NewAgentSession() *AgentSession {
 
 func (h *Harness) buildLoopRequest(workMemory *memory.WorkMemory, workspace string) loop.LoopRequest {
 	return loop.LoopRequest{
-		Memory:      workMemory,
-		Guardrail:   h.guardrail,
-		Planner:     h.planner,
-		Executor:    h.executor,
-		LLMClient:   h.llmClient,
-		AutoApprove: h.autoApprove,
-		Logger:      h.logger,
-		Workspace:   workspace,
+		Memory:        workMemory,
+		Guardrail:     h.guardrail,
+		Planner:       h.planner,
+		Executor:      h.executor,
+		LLMClient:     h.llmClient,
+		AutoApprove:   h.autoApprove,
+		Logger:        h.logger,
+		Workspace:     workspace,
+		MaxIterations: loop.DefaultMaxIterations,
+		Deadline:      time.Now().Add(defaultLoopTimeout),
 	}
 }
 
+// RunWithMemory runs the agent loop with auto-approval for all actions.
+// Used by the /ask REST endpoint and the legacy AgentSession.
 func (h *Harness) RunWithMemory(task string, workMemory *memory.WorkMemory, workspace string) HarnessExecutionResult {
 	h.logger.Info("processing user message",
 		"task_bytes", len(task),
@@ -117,13 +126,14 @@ func (h *Harness) RunWithMemory(task string, workMemory *memory.WorkMemory, work
 
 	workMemory.AddUser(task)
 
-	result := loop.RunLoop(h.buildLoopRequest(workMemory, workspace))
+	req := h.buildLoopRequest(workMemory, workspace)
+	req.AutoApprove = true // auto-approve for REST /ask endpoint
+	result := loop.RunLoop(req)
 
 	h.logger.Info("loop finished",
 		"stopped_by", result.StoppedBy,
 		"iterations", result.Iterations,
 		"answer_bytes", len(result.Answer),
-		"pending_action", result.PendingAction != nil,
 	)
 
 	return HarnessExecutionResult{
@@ -131,6 +141,42 @@ func (h *Harness) RunWithMemory(task string, workMemory *memory.WorkMemory, work
 		Task:       task,
 	}
 }
+
+// RunWithMemoryStreaming runs the agent loop with SSE streaming and approval callback.
+func (h *Harness) RunWithMemoryStreaming(
+	task string,
+	workMemory *memory.WorkMemory,
+	workspace string,
+	onEvent func(loop.SSEEvent),
+	onApproval loop.ApprovalFn,
+) HarnessExecutionResult {
+	h.logger.Info("processing user message (streaming)",
+		"task_bytes", len(task),
+		"memory_messages", workMemory.Len(),
+		"workspace", workspace,
+	)
+
+	workMemory.AddUser(task)
+
+	req := h.buildLoopRequest(workMemory, workspace)
+	req.AutoApprove = false
+	req.OnEvent = onEvent
+	req.OnApproval = onApproval
+	result := loop.RunLoop(req)
+
+	h.logger.Info("streaming loop finished",
+		"stopped_by", result.StoppedBy,
+		"iterations", result.Iterations,
+		"answer_bytes", len(result.Answer),
+	)
+
+	return HarnessExecutionResult{
+		LoopResult: result,
+		Task:       task,
+	}
+}
+
+// ---- AgentSession (CLI) ----
 
 func (s *AgentSession) Run(task string) HarnessExecutionResult {
 	result := s.harness.RunWithMemory(task, s.memory, "")
@@ -153,9 +199,7 @@ func (s *AgentSession) Approve() HarnessExecutionResult {
 	}
 	action := s.pendingAction
 	s.pendingAction = nil
-	result := s.harness.ContinueWithApprovedAction(action, s.memory, "")
-	s.pendingAction = result.LoopResult.PendingAction
-	return result
+	return s.harness.continueWithApprovedAction(action, s.memory, s.workspace)
 }
 
 func (s *AgentSession) Reject() HarnessExecutionResult {
@@ -169,10 +213,21 @@ func (s *AgentSession) Reject() HarnessExecutionResult {
 	}
 	action := s.pendingAction
 	s.pendingAction = nil
-	return s.harness.RecordRejectedAction(action, s.memory)
+	return s.harness.recordRejectedAction(action, s.memory)
 }
 
+// ---- continuation (for REST /approvals/{id}) ----
+
+const (
+	approvalContinuationLimit = 2
+	approvalContinuationTO    = 1 * time.Minute
+)
+
 func (h *Harness) ContinueWithApprovedAction(action *approval.PendingAction, workMemory *memory.WorkMemory, workspace string) HarnessExecutionResult {
+	return h.continueWithApprovedAction(action, workMemory, workspace)
+}
+
+func (h *Harness) continueWithApprovedAction(action *approval.PendingAction, workMemory *memory.WorkMemory, workspace string) HarnessExecutionResult {
 	h.logger.Info("continuing with approved action",
 		"tool", action.Tool,
 		"approval_id", action.ID,
@@ -212,16 +267,35 @@ func (h *Harness) ContinueWithApprovedAction(action *approval.PendingAction, wor
 		Action:     action.Tool,
 		Parameters: action.Args,
 	}, workspace)
+
+	// Use native tool calling format for the result message
+	toolCallID := "approve_" + action.ID
+	argsJSON, _ := json.Marshal(action.Args)
+	workMemory.AddAssistantToolCall(toolCallID, action.Tool, string(argsJSON))
+
 	if err != nil {
 		initialTrace.ToolEvents[0].Error = err.Error()
-		workMemory.AddTool(memory.FormatToolResult(action.Tool, result, err, "Approved "))
+		workMemory.AddToolResult(toolCallID, fmt.Sprintf("Tool %s error:\n%s%v", action.Tool, result, err))
 	} else {
 		initialTrace.ToolEvents[0].Result = result
-		workMemory.AddTool(memory.FormatToolResult(action.Tool, result, nil, "Approved "))
+		workMemory.AddToolResult(toolCallID, fmt.Sprintf("Tool %s result:\n%s", action.Tool, result))
 	}
 	workMemory.CompactIfNeeded(h.llmClient)
 
-	loopResult := loop.RunLoop(h.buildLoopRequest(workMemory, workspace))
+	loopReq := h.buildLoopRequest(workMemory, workspace)
+	loopReq.MaxIterations = approvalContinuationLimit
+	loopReq.Deadline = time.Now().Add(approvalContinuationTO)
+	loopReq.AutoApprove = true
+	loopResult := loop.RunLoop(loopReq)
+
+	if loopResult.StoppedBy == loop.StoppedByError && containsTimeExceeded(loopResult.Answer) {
+		toolResult := initialTrace.ToolEvents[0]
+		if toolResult.Error != "" {
+			loopResult.Answer = fmt.Sprintf("%s — ошибка: %s\n\n%s", action.Tool, toolResult.Error, loopResult.Answer)
+		} else {
+			loopResult.Answer = fmt.Sprintf("%s выполнен успешно.\n\n%s", action.Tool, loopResult.Answer)
+		}
+	}
 
 	initialTrace.ContextSize = workMemory.Len()
 	loopResult.Trace = prependApprovalTrace(initialTrace, loopResult.Trace)
@@ -234,6 +308,10 @@ func (h *Harness) ContinueWithApprovedAction(action *approval.PendingAction, wor
 }
 
 func (h *Harness) RecordRejectedAction(action *approval.PendingAction, workMemory *memory.WorkMemory) HarnessExecutionResult {
+	return h.recordRejectedAction(action, workMemory)
+}
+
+func (h *Harness) recordRejectedAction(action *approval.PendingAction, workMemory *memory.WorkMemory) HarnessExecutionResult {
 	h.logger.Info("action rejected by user",
 		"tool", action.Tool,
 		"approval_id", action.ID,
@@ -260,6 +338,10 @@ func prependApprovalTrace(first loop.LoopIteration, trace []loop.LoopIteration) 
 		result = append(result, item)
 	}
 	return result
+}
+
+func containsTimeExceeded(s string) bool {
+	return strings.Contains(s, "Превышено время выполнения")
 }
 
 func (s *AgentSession) Reset() {

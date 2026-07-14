@@ -36,7 +36,20 @@ func (t *GitTool) Name() string {
 }
 
 func (t *GitTool) Description() string {
-	return "Read local git repository context. Parameters: mode (branch, status, changed_files, diff, branch_diff, log), base (for branch_diff, default: main then master), limit (for log, default: 10), max_bytes (default: 122880). Read-only."
+	return "Read local git repository context."
+}
+
+func (t *GitTool) Schema() ToolSchema {
+	return ToolSchema{
+		Type: "object",
+		Properties: map[string]Parameter{
+			"mode":     {Type: "string", Description: "Information mode: branch, status, diff, log, changed_files, branch_diff (required)"},
+			"base":     {Type: "string", Description: "Base branch for branch_diff (default: main)"},
+			"limit":    {Type: "integer", Description: "Log limit (default: 10)"},
+			"max_bytes": {Type: "integer", Description: "Max output bytes (default: 122880)"},
+		},
+		Required: []string{"mode"},
+	}
 }
 
 func (t *GitTool) Run(params map[string]interface{}) (string, error) {

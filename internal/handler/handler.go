@@ -252,11 +252,15 @@ func visibleMessages(messages []llm.Message) []ChatMessageResponse {
 			continue
 		}
 
-		result = append(result, ChatMessageResponse{
-			Role:    message.Role,
-			Content: message.Content,
-			Text:    message.Content,
-		})
+		resp := ChatMessageResponse{
+			Role:       message.Role,
+			Content:    message.Content,
+			ToolCallID: message.ToolCallID,
+		}
+		if len(message.ToolCalls) > 0 {
+			resp.ToolCalls = message.ToolCalls
+		}
+		result = append(result, resp)
 	}
 
 	return result

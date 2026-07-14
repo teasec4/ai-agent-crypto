@@ -25,7 +25,17 @@ func (t *CreateDirectoryTool) Name() string {
 }
 
 func (t *CreateDirectoryTool) Description() string {
-	return "Create a directory in the workspace. Parameters: path (relative directory path). Requires user approval."
+	return "Create a directory in the workspace."
+}
+
+func (t *CreateDirectoryTool) Schema() ToolSchema {
+	return ToolSchema{
+		Type: "object",
+		Properties: map[string]Parameter{
+			"path": {Type: "string", Description: "Relative directory path (required)"},
+		},
+		Required: []string{"path"},
+	}
 }
 
 func (t *CreateDirectoryTool) RequiresApproval(params map[string]interface{}) bool {
@@ -82,7 +92,19 @@ func (t *WriteFileTool) Name() string {
 }
 
 func (t *WriteFileTool) Description() string {
-	return "Create or overwrite a text file in the workspace. Parameters: path, content, overwrite (default false), create_parents (default false). Requires user approval."
+	return "Create or overwrite a text file in the workspace."
+}
+
+func (t *WriteFileTool) Schema() ToolSchema {
+	return ToolSchema{
+		Type: "object",
+		Properties: map[string]Parameter{
+			"path":      {Type: "string", Description: "Relative file path (required)"},
+			"content":   {Type: "string", Description: "File content (required)"},
+			"overwrite": {Type: "boolean", Description: "Overwrite existing file (default: false)"},
+		},
+		Required: []string{"path", "content"},
+	}
 }
 
 func (t *WriteFileTool) RequiresApproval(params map[string]interface{}) bool {
@@ -177,7 +199,20 @@ func (t *EditFileTool) Name() string {
 }
 
 func (t *EditFileTool) Description() string {
-	return "Edit an existing text file by replacing old_text with new_text. Parameters: path, old_text, new_text, replace_all (default false). Requires user approval."
+	return "Edit an existing text file by replacing text."
+}
+
+func (t *EditFileTool) Schema() ToolSchema {
+	return ToolSchema{
+		Type: "object",
+		Properties: map[string]Parameter{
+			"path":         {Type: "string", Description: "Relative file path (required)"},
+			"old_text":     {Type: "string", Description: "Text to be replaced (required)"},
+			"new_text":     {Type: "string", Description: "Replacement text (required)"},
+			"replace_all":  {Type: "boolean", Description: "Replace all occurrences (default: false)"},
+		},
+		Required: []string{"path", "old_text", "new_text"},
+	}
 }
 
 func (t *EditFileTool) RequiresApproval(params map[string]interface{}) bool {
