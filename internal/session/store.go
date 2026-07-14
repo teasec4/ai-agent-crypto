@@ -244,9 +244,13 @@ func (s *State) changed() {
 }
 
 // NewApprovalChannel creates a fresh buffered channel for SSE approval.
+// Returns nil if a channel is already active (to prevent overwrite).
 func (s *State) NewApprovalChannel() chan bool {
 	s.approvalMu.Lock()
 	defer s.approvalMu.Unlock()
+	if s.approvalCh != nil {
+		return nil
+	}
 	s.approvalCh = make(chan bool, 1)
 	return s.approvalCh
 }

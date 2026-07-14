@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -29,22 +30,16 @@ func (e *ToolExecutor) SetLogger(logger *slog.Logger) {
 	e.logger = logger
 }
 
-// ExecuteWithWorkspace runs the plan's action, configuring the tool's workspace if set.
-func (e *ToolExecutor) ExecuteWithWorkspace(plan planner.PlanResult, workspace string) (string, error) {
+// ExecuteWithWorkspace runs the plan's action with the given workspace root.
+func (e *ToolExecutor) ExecuteWithWorkspace(ctx context.Context, plan planner.PlanResult, workspace string) (string, error) {
 	tool := e.registry.Get(plan.Action)
 	if tool == nil {
 		e.logger.Error("tool not found in registry", "action", plan.Action)
 		return "", fmt.Errorf("no tool found for action %q", plan.Action)
 	}
 
-	if workspace != "" {
-		if wt, ok := tool.(tools.WorkspaceTool); ok {
-			wt.SetRoot(workspace)
-		}
-	}
-
 	start := time.Now()
-	result, err := tool.Run(plan.Parameters)
+	result, err := tool.Run(ctx, workspace, plan.Parameters)
 	elapsed := time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -70,18 +65,11 @@ func (e *ToolExecutor) RequiresApproval(plan planner.PlanResult) bool {
 	return ok && aware.RequiresApproval(plan.Parameters)
 }
 
-func (e *ToolExecutor) PendingAction(id string, plan planner.PlanResult, workspace string) (*approval.PendingAction, error) {
+func (e *ToolExecutor) PendingAction(id string, plan planner.PlanResult) (*approval.PendingAction, error) {
 	tool := e.registry.Get(plan.Action)
 	if tool == nil {
 		e.logger.Error("pending action: tool not found", "action", plan.Action)
 		return nil, fmt.Errorf("no tool found for action %q", plan.Action)
-	}
-
-	// Set workspace before preview — Preview() may need to read files for diff.
-	if workspace != "" {
-		if wt, ok := tool.(tools.WorkspaceTool); ok {
-			wt.SetRoot(workspace)
-		}
 	}
 
 	aware, ok := tool.(tools.ApprovalAwareTool)

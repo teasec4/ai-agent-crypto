@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
@@ -81,6 +82,7 @@ type LoopResult struct {
 }
 
 type LoopRequest struct {
+	Context       context.Context
 	Memory        *memory.WorkMemory
 	Guardrail     guardrails.GuardrailFn
 	Planner       *planner.LLMPlanner

@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -192,7 +193,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 			needsApproval := !req.AutoApprove && req.Executor.RequiresApproval(planResult)
 
 			if needsApproval {
-				pendingAction, err := req.Executor.PendingAction(id.New(), planResult, req.Workspace)
+				pendingAction, err := req.Executor.PendingAction(id.New(), planResult)
 				if err != nil {
 					logger.Error("failed to build pending action",
 						"iteration", iterationIndex,
@@ -237,13 +238,40 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 					}
 				}
 
-				// Callback path (SSE streaming)
+				// Callback path (SSE streaming) — wait with context+timeout
 				logger.Info("approval required (callback)",
 					"iteration", iterationIndex,
 					"tool", planResult.Action,
 					"risk", pendingAction.Risk,
 				)
-				approved := req.OnApproval(pendingAction)
+
+				// Build an approval channel from the callback
+				type approvalResult struct {
+					approved bool
+				}
+				ch := make(chan approvalResult, 1)
+				go func() {
+					ch <- approvalResult{approved: req.OnApproval(pendingAction)}
+				}()
+
+				var approved bool
+				select {
+				case res := <-ch:
+					approved = res.approved
+				case <-req.Context.Done():
+					logger.Warn("approval cancelled by context",
+						"iteration", iterationIndex,
+						"tool", planResult.Action,
+						"error", req.Context.Err(),
+					)
+					approved = false
+				case <-time.After(5 * time.Minute):
+					logger.Warn("approval timed out",
+						"iteration", iterationIndex,
+						"tool", planResult.Action,
+					)
+					approved = false
+				}
 
 				if !approved {
 					logger.Info("user rejected action",
@@ -293,7 +321,11 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 			req.Memory.AddAssistantToolCall(toolCallID, planResult.Action, string(argsJSON))
 
 			toolStart := time.Now()
-			result, err := req.Executor.ExecuteWithWorkspace(planResult, req.Workspace)
+			var ctx context.Context = req.Context
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			result, err := req.Executor.ExecuteWithWorkspace(ctx, planResult, req.Workspace)
 			toolElapsed := time.Since(toolStart).Milliseconds()
 
 			event := ToolEvent{

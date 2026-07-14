@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -23,6 +24,7 @@ type Config struct {
 	TimeoutSeconds     int
 	SessionStoragePath string
 	LogLevel           string
+	AllowAutoApprove   bool
 }
 
 // Load loads configuration from .env file and environment variables
@@ -47,6 +49,7 @@ func Load() (*Config, error) {
 		TimeoutSeconds:     getEnvInt("TIMEOUT_SECONDS", 30),
 		SessionStoragePath: getEnv("SESSION_STORAGE_PATH", "data/sessions.json"),
 		LogLevel:           getEnv("LOG_LEVEL", "info"),
+		AllowAutoApprove:   getEnvBool("ALLOW_AUTO_APPROVE", false),
 	}
 
 	return cfg, nil
@@ -76,4 +79,17 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 		}
 	}
 	return defaultValue
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	switch strings.ToLower(value) {
+	case "true", "1", "yes", "y":
+		return true
+	default:
+		return false
+	}
 }

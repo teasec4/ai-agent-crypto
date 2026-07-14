@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,22 +13,14 @@ import (
 const writePreviewLimit = 6000
 
 // CreateDirectoryTool creates a directory inside the workspace after approval.
-type CreateDirectoryTool struct {
-	workspaceTool
-}
+type CreateDirectoryTool struct{}
 
-func NewCreateDirectoryTool() *CreateDirectoryTool {
-	return &CreateDirectoryTool{workspaceTool: newWorkspaceTool()}
-}
+func NewCreateDirectoryTool() *CreateDirectoryTool { return &CreateDirectoryTool{} }
 
-func (t *CreateDirectoryTool) Name() string {
-	return "create_directory"
-}
-
+func (t *CreateDirectoryTool) Name() string { return "create_directory" }
 func (t *CreateDirectoryTool) Description() string {
 	return "Create a directory in the workspace."
 }
-
 func (t *CreateDirectoryTool) Schema() ToolSchema {
 	return ToolSchema{
 		Type: "object",
@@ -38,37 +31,28 @@ func (t *CreateDirectoryTool) Schema() ToolSchema {
 	}
 }
 
-func (t *CreateDirectoryTool) RequiresApproval(params map[string]interface{}) bool {
-	return true
-}
-
+func (t *CreateDirectoryTool) RequiresApproval(params map[string]interface{}) bool { return true }
 func (t *CreateDirectoryTool) Risk(params map[string]interface{}) approval.RiskLevel {
 	return approval.RiskWrite
 }
-
 func (t *CreateDirectoryTool) Summary(params map[string]interface{}) string {
 	path := getStringParam(params, "path", "")
 	return fmt.Sprintf("Create directory %s", path)
 }
-
 func (t *CreateDirectoryTool) Preview(params map[string]interface{}) (string, error) {
 	path := getStringParam(params, "path", "")
 	if path == "" {
 		return "", fmt.Errorf("missing required parameter 'path'")
 	}
-	_, relPath, err := t.resolvePath(path)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Will create directory:\n%s", relPath), nil
+	return fmt.Sprintf("Will create directory:\n%s", path), nil
 }
-
-func (t *CreateDirectoryTool) Run(params map[string]interface{}) (string, error) {
+func (t *CreateDirectoryTool) Run(ctx context.Context, workspace string, params map[string]interface{}) (string, error) {
 	path := getStringParam(params, "path", "")
 	if path == "" {
 		return "", fmt.Errorf("missing required parameter 'path'")
 	}
-	fullPath, relPath, err := t.resolvePath(path)
+	root := getRoot(workspace)
+	fullPath, relPath, err := resolvePath(root, path)
 	if err != nil {
 		return "", err
 	}
@@ -79,22 +63,14 @@ func (t *CreateDirectoryTool) Run(params map[string]interface{}) (string, error)
 }
 
 // WriteFileTool writes a text file inside the workspace after approval.
-type WriteFileTool struct {
-	workspaceTool
-}
+type WriteFileTool struct{}
 
-func NewWriteFileTool() *WriteFileTool {
-	return &WriteFileTool{workspaceTool: newWorkspaceTool()}
-}
+func NewWriteFileTool() *WriteFileTool { return &WriteFileTool{} }
 
-func (t *WriteFileTool) Name() string {
-	return "write_file"
-}
-
+func (t *WriteFileTool) Name() string { return "write_file" }
 func (t *WriteFileTool) Description() string {
 	return "Create or overwrite a text file in the workspace."
 }
-
 func (t *WriteFileTool) Schema() ToolSchema {
 	return ToolSchema{
 		Type: "object",
@@ -107,14 +83,10 @@ func (t *WriteFileTool) Schema() ToolSchema {
 	}
 }
 
-func (t *WriteFileTool) RequiresApproval(params map[string]interface{}) bool {
-	return true
-}
-
+func (t *WriteFileTool) RequiresApproval(params map[string]interface{}) bool { return true }
 func (t *WriteFileTool) Risk(params map[string]interface{}) approval.RiskLevel {
 	return approval.RiskWrite
 }
-
 func (t *WriteFileTool) Summary(params map[string]interface{}) string {
 	path := getStringParam(params, "path", "")
 	if getBoolParam(params, "overwrite", false) {
@@ -122,7 +94,6 @@ func (t *WriteFileTool) Summary(params map[string]interface{}) string {
 	}
 	return fmt.Sprintf("Create file %s", path)
 }
-
 func (t *WriteFileTool) Preview(params map[string]interface{}) (string, error) {
 	path := getStringParam(params, "path", "")
 	content, ok := params["content"].(string)
@@ -132,23 +103,12 @@ func (t *WriteFileTool) Preview(params map[string]interface{}) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("missing required parameter 'content'")
 	}
-	fullPath, relPath, err := t.resolvePath(path)
-	if err != nil {
-		return "", err
-	}
 	if looksBinary([]byte(content)) {
 		return "", fmt.Errorf("content appears to be binary")
 	}
-
-	oldContent := ""
-	if data, err := os.ReadFile(fullPath); err == nil {
-		oldContent = string(data)
-	}
-
-	return buildTextPreview(relPath, oldContent, content), nil
+	return fmt.Sprintf("Will write file:\n%s\n(%d bytes)", path, len(content)), nil
 }
-
-func (t *WriteFileTool) Run(params map[string]interface{}) (string, error) {
+func (t *WriteFileTool) Run(ctx context.Context, workspace string, params map[string]interface{}) (string, error) {
 	path := getStringParam(params, "path", "")
 	content, ok := params["content"].(string)
 	if path == "" {
@@ -157,7 +117,9 @@ func (t *WriteFileTool) Run(params map[string]interface{}) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("missing required parameter 'content'")
 	}
-	fullPath, relPath, err := t.resolvePath(path)
+
+	root := getRoot(workspace)
+	fullPath, relPath, err := resolvePath(root, path)
 	if err != nil {
 		return "", err
 	}
@@ -166,17 +128,14 @@ func (t *WriteFileTool) Run(params map[string]interface{}) (string, error) {
 	}
 
 	overwrite := getBoolParam(params, "overwrite", false)
-	createParents := getBoolParam(params, "create_parents", false)
 	if _, err := os.Stat(fullPath); err == nil && !overwrite {
 		return "", fmt.Errorf("file %q already exists; set overwrite=true to replace it", relPath)
 	} else if err != nil && !os.IsNotExist(err) {
 		return "", fmt.Errorf("failed to stat %q: %w", relPath, err)
 	}
 
-	if createParents {
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-			return "", fmt.Errorf("failed to create parent directories for %q: %w", relPath, err)
-		}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		return "", fmt.Errorf("failed to create parent directories for %q: %w", relPath, err)
 	}
 
 	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
@@ -186,47 +145,34 @@ func (t *WriteFileTool) Run(params map[string]interface{}) (string, error) {
 }
 
 // EditFileTool replaces text in an existing file after approval.
-type EditFileTool struct {
-	workspaceTool
-}
+type EditFileTool struct{}
 
-func NewEditFileTool() *EditFileTool {
-	return &EditFileTool{workspaceTool: newWorkspaceTool()}
-}
+func NewEditFileTool() *EditFileTool { return &EditFileTool{} }
 
-func (t *EditFileTool) Name() string {
-	return "edit_file"
-}
-
+func (t *EditFileTool) Name() string { return "edit_file" }
 func (t *EditFileTool) Description() string {
 	return "Edit an existing text file by replacing text."
 }
-
 func (t *EditFileTool) Schema() ToolSchema {
 	return ToolSchema{
 		Type: "object",
 		Properties: map[string]Parameter{
-			"path":         {Type: "string", Description: "Relative file path (required)"},
-			"old_text":     {Type: "string", Description: "Text to be replaced (required)"},
-			"new_text":     {Type: "string", Description: "Replacement text (required)"},
-			"replace_all":  {Type: "boolean", Description: "Replace all occurrences (default: false)"},
+			"path":        {Type: "string", Description: "Relative file path (required)"},
+			"old_text":    {Type: "string", Description: "Text to be replaced (required)"},
+			"new_text":    {Type: "string", Description: "Replacement text (required)"},
+			"replace_all": {Type: "boolean", Description: "Replace all occurrences (default: false)"},
 		},
 		Required: []string{"path", "old_text", "new_text"},
 	}
 }
 
-func (t *EditFileTool) RequiresApproval(params map[string]interface{}) bool {
-	return true
-}
-
+func (t *EditFileTool) RequiresApproval(params map[string]interface{}) bool { return true }
 func (t *EditFileTool) Risk(params map[string]interface{}) approval.RiskLevel {
 	return approval.RiskWrite
 }
-
 func (t *EditFileTool) Summary(params map[string]interface{}) string {
 	return fmt.Sprintf("Edit file %s", getStringParam(params, "path", ""))
 }
-
 func (t *EditFileTool) Preview(params map[string]interface{}) (string, error) {
 	path := getStringParam(params, "path", "")
 	oldText, oldOK := params["old_text"].(string)
@@ -240,28 +186,9 @@ func (t *EditFileTool) Preview(params map[string]interface{}) (string, error) {
 	if !newOK {
 		return "", fmt.Errorf("missing required parameter 'new_text'")
 	}
-
-	fullPath, relPath, err := t.resolvePath(path)
-	if err != nil {
-		return "", err
-	}
-	data, err := os.ReadFile(fullPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read %q: %w", relPath, err)
-	}
-	if looksBinary(data) {
-		return "", fmt.Errorf("%q appears to be a binary file", relPath)
-	}
-
-	oldContent := string(data)
-	newContent, replacements, err := replaceContent(oldContent, oldText, newText, getBoolParam(params, "replace_all", false))
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Replacements: %d\n%s", replacements, buildTextPreview(relPath, oldContent, newContent)), nil
+	return fmt.Sprintf("Will edit file %s\nReplace: %q → %q", path, oldText, newText), nil
 }
-
-func (t *EditFileTool) Run(params map[string]interface{}) (string, error) {
+func (t *EditFileTool) Run(ctx context.Context, workspace string, params map[string]interface{}) (string, error) {
 	path := getStringParam(params, "path", "")
 	oldText, oldOK := params["old_text"].(string)
 	newText, newOK := params["new_text"].(string)
@@ -275,7 +202,8 @@ func (t *EditFileTool) Run(params map[string]interface{}) (string, error) {
 		return "", fmt.Errorf("missing required parameter 'new_text'")
 	}
 
-	fullPath, relPath, err := t.resolvePath(path)
+	root := getRoot(workspace)
+	fullPath, relPath, err := resolvePath(root, path)
 	if err != nil {
 		return "", err
 	}
@@ -287,7 +215,8 @@ func (t *EditFileTool) Run(params map[string]interface{}) (string, error) {
 		return "", fmt.Errorf("%q appears to be a binary file", relPath)
 	}
 
-	newContent, replacements, err := replaceContent(string(data), oldText, newText, getBoolParam(params, "replace_all", false))
+	replaceAll := getBoolParam(params, "replace_all", false)
+	newContent, replacements, err := replaceContent(string(data), oldText, newText, replaceAll)
 	if err != nil {
 		return "", err
 	}
@@ -321,20 +250,4 @@ func getBoolParam(params map[string]interface{}, key string, fallback bool) bool
 	default:
 		return fallback
 	}
-}
-
-func buildTextPreview(path string, oldContent string, newContent string) string {
-	oldSnippet := trimPreview(oldContent)
-	newSnippet := trimPreview(newContent)
-	return fmt.Sprintf("File: %s\n--- before\n%s\n--- after\n%s", path, oldSnippet, newSnippet)
-}
-
-func trimPreview(content string) string {
-	if content == "" {
-		return "<empty or new file>"
-	}
-	if len(content) <= writePreviewLimit {
-		return content
-	}
-	return content[:writePreviewLimit] + fmt.Sprintf("\n... truncated to %d bytes", writePreviewLimit)
 }

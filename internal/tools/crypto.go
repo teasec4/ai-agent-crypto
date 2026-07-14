@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,7 +53,7 @@ func (t *CryptoTool) Schema() ToolSchema {
 }
 
 // Run executes the crypto price check.
-func (t *CryptoTool) Run(params map[string]interface{}) (string, error) {
+func (t *CryptoTool) Run(ctx context.Context, workspace string, params map[string]interface{}) (string, error) {
 	query, ok := params["query"].(string)
 	if !ok || query == "" {
 		return "", fmt.Errorf("missing required parameter 'query' (e.g. query=bitcoin). Supported params: query (crypto name), currency (fiat, default: usd)")

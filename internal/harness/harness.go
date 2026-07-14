@@ -78,7 +78,8 @@ func New(cfg *config.Config) *Harness {
 		guardrail: guardrails.CombineGuardrails(
 			guardrails.MaxIterations(loop.DefaultMaxIterations),
 		),
-		logger: logger,
+		autoApprove: cfg.AllowAutoApprove,
+		logger:      logger,
 	}
 }
 
@@ -109,7 +110,6 @@ func (h *Harness) RunWithMemory(task string, workMemory *memory.WorkMemory, work
 	workMemory.AddUser(task)
 
 	req := h.buildLoopRequest(workMemory, workspace)
-	req.AutoApprove = true
 	result := loop.RunLoop(req)
 
 	h.logger.Info("loop finished",

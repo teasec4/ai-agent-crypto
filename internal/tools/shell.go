@@ -19,13 +19,9 @@ const (
 )
 
 // CommandTool runs allowlisted non-interactive commands inside the workspace after approval.
-type CommandTool struct {
-	workspaceTool
-}
+type CommandTool struct{}
 
-func NewCommandTool() *CommandTool {
-	return &CommandTool{workspaceTool: newWorkspaceTool()}
-}
+func NewCommandTool() *CommandTool { return &CommandTool{} }
 
 func (t *CommandTool) Name() string {
 	return "run_command"
@@ -74,7 +70,7 @@ func (t *CommandTool) Preview(params map[string]interface{}) (string, error) {
 	return fmt.Sprintf("Will run command after approval:\nCommand: %s\nWorking directory: %s\nTimeout: %ds\nMax output: %d bytes", formatCommand(command, args), cwd, timeoutSeconds, maxBytes), nil
 }
 
-func (t *CommandTool) Run(params map[string]interface{}) (string, error) {
+func (t *CommandTool) Run(ctx context.Context, ws string, params map[string]interface{}) (string, error) {
 	command, args, cwd, timeoutSeconds, maxBytes, err := t.parseParams(params)
 	if err != nil {
 		return "", err
@@ -83,15 +79,16 @@ func (t *CommandTool) Run(params map[string]interface{}) (string, error) {
 		return "", err
 	}
 
-	fullCWD, relCWD, err := t.resolvePath(cwd)
+	root := getRoot(ws)
+	fullCWD, relCWD, err := resolvePath(root, cwd)
 	if err != nil {
 		return "", err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
+	subCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, command, args...)
+	cmd := exec.CommandContext(subCtx, command, args...)
 	cmd.Dir = fullCWD
 	cmd.Env = append(cmd.Environ(), "GIT_PAGER=cat", "PAGER=cat")
 
@@ -103,7 +100,7 @@ func (t *CommandTool) Run(params map[string]interface{}) (string, error) {
 	cmd.Stderr = &stderr
 
 	err = cmd.Run()
-	if ctx.Err() == context.DeadlineExceeded {
+	if subCtx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("command timed out after %d seconds", timeoutSeconds)
 	}
 

@@ -124,6 +124,14 @@ func (h *AgentHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Create approval channel BEFORE starting the loop.
+	approvalCh := state.NewApprovalChannel()
+	if approvalCh == nil {
+		h.logger.Warn("SSE: approval channel already active on this session", "session", sessionID)
+		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "an active SSE stream already exists on this session"})
+		return
+	}
+
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -131,9 +139,6 @@ func (h *AgentHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-
-	// Create approval channel BEFORE starting the loop.
-	approvalCh := state.NewApprovalChannel()
 
 	sessionWorkspace := state.Workspace()
 

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -24,23 +25,10 @@ var blockedWorkspaceNames = map[string]bool{
 	".git":       true,
 }
 
-type workspaceTool struct {
-	root string
-}
-
-func newWorkspaceTool() workspaceTool {
-	root, err := os.Getwd()
-	if err != nil {
-		root = "."
-	}
-	return workspaceTool{root: root}
-}
-
-func (t *workspaceTool) SetRoot(path string) {
-	t.root = filepath.Clean(path)
-}
-
-func (t workspaceTool) resolvePath(rawPath string) (string, string, error) {
+// resolvePath resolves a relative path inside root.
+// It returns (resolved-full-path, relative-slash-path, error).
+// It follows symlinks on root and prevents symlink traversal outside root.
+func resolvePath(root, rawPath string) (full string, rel string, err error) {
 	path := strings.TrimSpace(rawPath)
 	if path == "" {
 		path = "."
@@ -51,8 +39,11 @@ func (t workspaceTool) resolvePath(rawPath string) (string, string, error) {
 
 	clean := filepath.Clean(path)
 	if clean == "." {
-		full := filepath.Clean(t.root)
-		return full, ".", nil
+		rootResolved, err := resolveRoot(root)
+		if err != nil {
+			return "", "", err
+		}
+		return rootResolved, ".", nil
 	}
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", "", fmt.Errorf("path escapes workspace")
@@ -61,14 +52,43 @@ func (t workspaceTool) resolvePath(rawPath string) (string, string, error) {
 		return "", "", fmt.Errorf("access to %q is blocked", clean)
 	}
 
-	full := filepath.Join(t.root, clean)
-	rootClean := filepath.Clean(t.root)
+	rootResolved, err := resolveRoot(root)
+	if err != nil {
+		return "", "", err
+	}
+
+	full = filepath.Join(rootResolved, clean)
 	fullClean := filepath.Clean(full)
-	if fullClean != rootClean && !strings.HasPrefix(fullClean, rootClean+string(filepath.Separator)) {
+
+	if fullClean != rootResolved && !strings.HasPrefix(fullClean, rootResolved+string(filepath.Separator)) {
 		return "", "", fmt.Errorf("path escapes workspace")
 	}
 
+	// Resolve symlinks on the final path as an extra safety check.
+	if real, statErr := filepath.EvalSymlinks(fullClean); statErr == nil {
+		if real != rootResolved && !strings.HasPrefix(real, rootResolved+string(filepath.Separator)) {
+			return "", "", fmt.Errorf("symlink %q points outside the workspace", clean)
+		}
+	}
+
 	return fullClean, filepath.ToSlash(clean), nil
+}
+
+// resolveRoot cleans and resolves symlinks on the workspace root.
+func resolveRoot(root string) (string, error) {
+	clean := filepath.Clean(root)
+	if clean == "." {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return ".", nil
+		}
+		clean = cwd
+	}
+	resolved, err := filepath.EvalSymlinks(clean)
+	if err != nil {
+		return clean, nil // best-effort: use cleaned path if EvalSymlinks fails
+	}
+	return resolved, nil
 }
 
 func isBlockedWorkspacePath(path string) bool {
@@ -125,23 +145,30 @@ type jsonNumber interface {
 	Int64() (int64, error)
 }
 
-// ListDirectoryTool lists files and directories inside the workspace.
-type ListDirectoryTool struct {
-	workspaceTool
+// ---- helpers that used to be on workspaceTool but don't need a receiver ----
+
+// getRoot returns the effective root directory.
+func getRoot(workspace string) string {
+	if workspace != "" {
+		return workspace
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return cwd
 }
 
-func NewListDirectoryTool() *ListDirectoryTool {
-	return &ListDirectoryTool{workspaceTool: newWorkspaceTool()}
-}
+// ------------------- ListDirectoryTool -------------------
 
-func (t *ListDirectoryTool) Name() string {
-	return "list_directory"
-}
+type ListDirectoryTool struct{}
 
+func NewListDirectoryTool() *ListDirectoryTool { return &ListDirectoryTool{} }
+
+func (t *ListDirectoryTool) Name() string { return "list_directory" }
 func (t *ListDirectoryTool) Description() string {
 	return "List files and directories in the workspace."
 }
-
 func (t *ListDirectoryTool) Schema() ToolSchema {
 	return ToolSchema{
 		Type: "object",
@@ -151,12 +178,12 @@ func (t *ListDirectoryTool) Schema() ToolSchema {
 		},
 	}
 }
-
-func (t *ListDirectoryTool) Run(params map[string]interface{}) (string, error) {
+func (t *ListDirectoryTool) Run(ctx context.Context, workspace string, params map[string]interface{}) (string, error) {
 	path := getStringParam(params, "path", ".")
 	maxEntries := getIntParam(params, "max_entries", defaultMaxListEntries, 1, 1000)
 
-	fullPath, relPath, err := t.resolvePath(path)
+	root := getRoot(workspace)
+	fullPath, relPath, err := resolvePath(root, path)
 	if err != nil {
 		return "", err
 	}
@@ -198,23 +225,16 @@ func (t *ListDirectoryTool) Run(params map[string]interface{}) (string, error) {
 	return strings.TrimRight(sb.String(), "\n"), nil
 }
 
-// ReadFileTool reads a text file inside the workspace.
-type ReadFileTool struct {
-	workspaceTool
-}
+// ------------------- ReadFileTool -------------------
 
-func NewReadFileTool() *ReadFileTool {
-	return &ReadFileTool{workspaceTool: newWorkspaceTool()}
-}
+type ReadFileTool struct{}
 
-func (t *ReadFileTool) Name() string {
-	return "read_file"
-}
+func NewReadFileTool() *ReadFileTool { return &ReadFileTool{} }
 
+func (t *ReadFileTool) Name() string { return "read_file" }
 func (t *ReadFileTool) Description() string {
 	return "Read a text file from the workspace."
 }
-
 func (t *ReadFileTool) Schema() ToolSchema {
 	return ToolSchema{
 		Type: "object",
@@ -225,15 +245,15 @@ func (t *ReadFileTool) Schema() ToolSchema {
 		Required: []string{"path"},
 	}
 }
-
-func (t *ReadFileTool) Run(params map[string]interface{}) (string, error) {
+func (t *ReadFileTool) Run(ctx context.Context, workspace string, params map[string]interface{}) (string, error) {
 	path := getStringParam(params, "path", "")
 	if path == "" {
 		return "", fmt.Errorf("missing required parameter 'path'")
 	}
 	maxBytes := getIntParam(params, "max_bytes", defaultMaxReadBytes, 1, 512*1024)
 
-	fullPath, relPath, err := t.resolvePath(path)
+	root := getRoot(workspace)
+	fullPath, relPath, err := resolvePath(root, path)
 	if err != nil {
 		return "", err
 	}
@@ -290,23 +310,16 @@ func looksBinary(data []byte) bool {
 	return false
 }
 
-// FindFilesTool finds files by glob pattern inside the workspace.
-type FindFilesTool struct {
-	workspaceTool
-}
+// ------------------- FindFilesTool -------------------
 
-func NewFindFilesTool() *FindFilesTool {
-	return &FindFilesTool{workspaceTool: newWorkspaceTool()}
-}
+type FindFilesTool struct{}
 
-func (t *FindFilesTool) Name() string {
-	return "find_files"
-}
+func NewFindFilesTool() *FindFilesTool { return &FindFilesTool{} }
 
+func (t *FindFilesTool) Name() string { return "find_files" }
 func (t *FindFilesTool) Description() string {
 	return "Find workspace files by glob pattern."
 }
-
 func (t *FindFilesTool) Schema() ToolSchema {
 	return ToolSchema{
 		Type: "object",
@@ -317,8 +330,7 @@ func (t *FindFilesTool) Schema() ToolSchema {
 		Required: []string{"pattern"},
 	}
 }
-
-func (t *FindFilesTool) Run(params map[string]interface{}) (string, error) {
+func (t *FindFilesTool) Run(ctx context.Context, workspace string, params map[string]interface{}) (string, error) {
 	pattern := getStringParam(params, "pattern", "")
 	if pattern == "" {
 		return "", fmt.Errorf("missing required parameter 'pattern'")
@@ -328,8 +340,9 @@ func (t *FindFilesTool) Run(params map[string]interface{}) (string, error) {
 	}
 	maxMatches := getIntParam(params, "max_matches", defaultMaxFindMatches, 1, 1000)
 
+	root := getRoot(workspace)
 	matches := make([]string, 0)
-	err := filepath.WalkDir(t.root, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -341,7 +354,7 @@ func (t *FindFilesTool) Run(params map[string]interface{}) (string, error) {
 			return nil
 		}
 
-		rel, err := filepath.Rel(t.root, path)
+		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return nil
 		}
@@ -414,23 +427,16 @@ func matchPathSegments(patternSegments, nameSegments []string) (bool, error) {
 	return matchPathSegments(patternSegments[1:], nameSegments[1:])
 }
 
-// SearchTextTool searches text inside workspace files.
-type SearchTextTool struct {
-	workspaceTool
-}
+// ------------------- SearchTextTool -------------------
 
-func NewSearchTextTool() *SearchTextTool {
-	return &SearchTextTool{workspaceTool: newWorkspaceTool()}
-}
+type SearchTextTool struct{}
 
-func (t *SearchTextTool) Name() string {
-	return "search_text"
-}
+func NewSearchTextTool() *SearchTextTool { return &SearchTextTool{} }
 
+func (t *SearchTextTool) Name() string { return "search_text" }
 func (t *SearchTextTool) Description() string {
 	return "Search text in workspace files."
 }
-
 func (t *SearchTextTool) Schema() ToolSchema {
 	return ToolSchema{
 		Type: "object",
@@ -442,8 +448,7 @@ func (t *SearchTextTool) Schema() ToolSchema {
 		Required: []string{"query"},
 	}
 }
-
-func (t *SearchTextTool) Run(params map[string]interface{}) (string, error) {
+func (t *SearchTextTool) Run(ctx context.Context, workspace string, params map[string]interface{}) (string, error) {
 	query := getStringParam(params, "query", "")
 	if query == "" {
 		return "", fmt.Errorf("missing required parameter 'query'")
@@ -451,7 +456,8 @@ func (t *SearchTextTool) Run(params map[string]interface{}) (string, error) {
 	path := getStringParam(params, "path", ".")
 	maxHits := getIntParam(params, "max_hits", defaultMaxSearchHits, 1, 500)
 
-	fullPath, relRoot, err := t.resolvePath(path)
+	root := getRoot(workspace)
+	fullPath, relRoot, err := resolvePath(root, path)
 	if err != nil {
 		return "", err
 	}
@@ -468,7 +474,7 @@ func (t *SearchTextTool) Run(params map[string]interface{}) (string, error) {
 			return nil
 		}
 
-		rel, err := filepath.Rel(t.root, path)
+		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return nil
 		}

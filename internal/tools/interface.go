@@ -1,6 +1,10 @@
 package tools
 
-import "ai-agent/internal/approval"
+import (
+	"context"
+
+	"ai-agent/internal/approval"
+)
 
 // Parameter describes a single tool parameter for LLM tool calling.
 type Parameter struct {
@@ -18,28 +22,19 @@ type ToolSchema struct {
 
 // Tool is the interface that all tools must implement.
 type Tool interface {
-	// Name returns the unique name of the tool (e.g. "read_file").
 	Name() string
-
-	// Description returns a human-readable description.
 	Description() string
-
-	// Schema returns the JSON schema for the tool's parameters.
 	Schema() ToolSchema
-
-	// Run executes the tool with the given parameters and returns the result.
-	Run(params map[string]interface{}) (string, error)
+	// Run executes the tool. workspace is the sandbox root (empty = cwd).
+	// ctx carries deadline/cancellation from the agent loop.
+	Run(ctx context.Context, workspace string, params map[string]interface{}) (string, error)
 }
 
 // ApprovalAwareTool can request user approval before execution.
+// Preview/Summary/Risk are called with params only (no workspace needed).
 type ApprovalAwareTool interface {
 	RequiresApproval(params map[string]interface{}) bool
 	Risk(params map[string]interface{}) approval.RiskLevel
 	Preview(params map[string]interface{}) (string, error)
 	Summary(params map[string]interface{}) string
-}
-
-// WorkspaceTool accepts a configurable workspace root path.
-type WorkspaceTool interface {
-	SetRoot(path string)
 }
