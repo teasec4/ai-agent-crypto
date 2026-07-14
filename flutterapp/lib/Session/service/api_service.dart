@@ -4,41 +4,7 @@ import 'dart:io';
 
 import 'package:flutterapp/Session/service/domain/request.dart';
 import 'package:flutterapp/Session/service/domain/response.dart';
-
-/// SSE event received from the stream endpoint.
-sealed class SseEvent {}
-
-class SseThinking extends SseEvent {}
-
-class SseToolStart extends SseEvent {
-  final String tool;
-  final Map<String, dynamic>? args;
-  SseToolStart({required this.tool, this.args});
-}
-
-class SseToolDone extends SseEvent {
-  final String tool;
-  final String? result;
-  SseToolDone({required this.tool, this.result});
-}
-
-class SseToolError extends SseEvent {
-  final String tool;
-  final String? error;
-  SseToolError({required this.tool, this.error});
-}
-
-class SseApprovalRequired extends SseEvent {
-  final String tool;
-  SseApprovalRequired({required this.tool});
-}
-
-class SseDone extends SseEvent {
-  final String answer;
-  SseDone({required this.answer});
-}
-
-class SseClose extends SseEvent {}
+import 'package:flutterapp/Session/service/domain/sse_event.dart';
 
 class ApiService {
   static const _host = 'http://localhost:8080';
@@ -77,7 +43,10 @@ class ApiService {
     try {
       final req = await client.postUrl(Uri.parse('$_host/ask'));
       req.headers.contentType = ContentType.json;
-      req.write(jsonEncode(AskRequest(sessionId: sessionId, message: message).toJson()));
+      req.write(jsonEncode({
+        if (sessionId != null) 'sessionId': sessionId,
+        'message': message,
+      }));
       final res = await req.close();
       final body = await res.transform(utf8.decoder).join();
       return AskResponse.fromJson(jsonDecode(body) as Map<String, dynamic>);
