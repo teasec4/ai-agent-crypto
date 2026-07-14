@@ -255,6 +255,16 @@ func (s *State) NewApprovalChannel() chan bool {
 	return s.approvalCh
 }
 
+// FinishApprovalChannel clears the active SSE approval channel if it still
+// belongs to the caller's stream.
+func (s *State) FinishApprovalChannel(ch chan bool) {
+	s.approvalMu.Lock()
+	defer s.approvalMu.Unlock()
+	if s.approvalCh == ch {
+		s.approvalCh = nil
+	}
+}
+
 // SignalApproval sends a value to the active approval channel, if any.
 // Safe to call multiple times; if no channel is active the call is silently ignored.
 func (s *State) SignalApproval(approved bool) {

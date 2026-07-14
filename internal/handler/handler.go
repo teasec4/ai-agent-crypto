@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"ai-agent/internal/approval"
 	"ai-agent/internal/harness"
@@ -17,7 +18,10 @@ import (
 	"ai-agent/internal/session"
 )
 
-const maxRequestBodySize = 1 << 20 // 1 MB
+const (
+	maxRequestBodySize = 1 << 20 // 1 MB
+	approvalTimeout    = 10 * time.Minute
+)
 
 type AgentHandler struct {
 	harness  *harness.Harness
@@ -131,6 +135,7 @@ func (h *AgentHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "an active SSE stream already exists on this session"})
 		return
 	}
+	defer state.FinishApprovalChannel(approvalCh)
 
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -159,7 +164,16 @@ func (h *AgentHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 				Args:   action.Args,
 				Action: action,
 			})
-			approved := <-approvalCh
+			var approved bool
+			select {
+			case approved = <-approvalCh:
+			case <-r.Context().Done():
+				h.logger.Info("SSE: client disconnected while waiting for approval", "tool", action.Tool)
+				return false
+			case <-time.After(approvalTimeout):
+				h.logger.Info("SSE: approval timed out", "tool", action.Tool)
+				return false
+			}
 			if approved {
 				h.logger.Info("SSE: user approved", "tool", action.Tool)
 			} else {
