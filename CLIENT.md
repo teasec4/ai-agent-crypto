@@ -33,7 +33,7 @@ Health check.
 
 ### `POST /ask`
 
-Send a message to the agent. The agent runs its loop and returns the final answer. Write/exec tools are auto-approved (no user confirmation required).
+Send a message to the agent. The agent runs its loop and returns a final answer, or stops with `stoppedBy: "approval_required"` when a write/exec tool needs confirmation and `ALLOW_AUTO_APPROVE=false`.
 
 **Request:**
 
@@ -74,8 +74,11 @@ Send a message to the agent. The agent runs its loop and returns the final answe
 | `sessionId` | string | Session ID (auto-created or provided) |
 | `answer` | string | Final agent answer |
 | `iterations` | int | How many loop iterations were executed |
-| `stoppedBy` | string | `"success"`, `"guardrail"`, `"error"` |
+| `stoppedBy` | string | `"success"`, `"model"`, `"approval_required"`, `"guardrail"`, `"error"` |
 | `trace` | array | Detailed trace of each iteration |
+| `pendingAction` | object | Present when `stoppedBy` is `"approval_required"` |
+
+For interactive approval UX, prefer the SSE endpoint below. It keeps the run open while the UI calls `/approve` or `/reject`.
 
 **Trace Iteration:**
 

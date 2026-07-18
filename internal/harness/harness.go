@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"time"
@@ -83,8 +84,12 @@ func New(cfg *config.Config) *Harness {
 	}
 }
 
-func (h *Harness) buildLoopRequest(workMemory *memory.WorkMemory, workspace string) loop.LoopRequest {
+func (h *Harness) buildLoopRequest(ctx context.Context, workMemory *memory.WorkMemory, workspace string) loop.LoopRequest {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return loop.LoopRequest{
+		Context:       ctx,
 		Memory:        workMemory,
 		Guardrail:     h.guardrail,
 		Planner:       h.planner,
@@ -98,9 +103,9 @@ func (h *Harness) buildLoopRequest(workMemory *memory.WorkMemory, workspace stri
 	}
 }
 
-// RunWithMemory runs the agent loop with auto-approval for all actions.
+// RunWithMemory runs the agent loop with the configured approval policy.
 // Used by the REST /ask endpoint.
-func (h *Harness) RunWithMemory(task string, workMemory *memory.WorkMemory, workspace string) HarnessExecutionResult {
+func (h *Harness) RunWithMemory(ctx context.Context, task string, workMemory *memory.WorkMemory, workspace string) HarnessExecutionResult {
 	h.logger.Info("processing user message",
 		"task_bytes", len(task),
 		"memory_messages", workMemory.Len(),
@@ -109,7 +114,7 @@ func (h *Harness) RunWithMemory(task string, workMemory *memory.WorkMemory, work
 
 	workMemory.AddUser(task)
 
-	req := h.buildLoopRequest(workMemory, workspace)
+	req := h.buildLoopRequest(ctx, workMemory, workspace)
 	result := loop.RunLoop(req)
 
 	h.logger.Info("loop finished",
@@ -128,6 +133,7 @@ func (h *Harness) RunWithMemory(task string, workMemory *memory.WorkMemory, work
 // onEvent receives lifecycle events (thinking, tool_start, tool_done, etc).
 // onApproval is called when a tool requires user confirmation; it may block.
 func (h *Harness) RunWithMemoryStreaming(
+	ctx context.Context,
 	task string,
 	workMemory *memory.WorkMemory,
 	workspace string,
@@ -142,7 +148,7 @@ func (h *Harness) RunWithMemoryStreaming(
 
 	workMemory.AddUser(task)
 
-	req := h.buildLoopRequest(workMemory, workspace)
+	req := h.buildLoopRequest(ctx, workMemory, workspace)
 	req.AutoApprove = false
 	req.OnEvent = onEvent
 	req.OnApproval = onApproval

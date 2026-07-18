@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -48,6 +49,7 @@ func run() error {
 		slog.Info("user input", "input", input)
 
 		result := h.RunWithMemoryStreaming(
+			context.Background(),
 			input,
 			mem,
 			"",
@@ -63,7 +65,7 @@ func run() error {
 					fmt.Printf(" ✗ (%s)", event.Error)
 				}
 			},
-			func(action *approval.PendingAction) bool {
+			func(ctx context.Context, action *approval.PendingAction) bool {
 				printApprovalCard(action)
 				fmt.Print("  > ")
 				if !scanner.Scan() {

@@ -37,7 +37,7 @@ type SSEEvent struct {
 }
 
 // ApprovalFn is called when a tool requires user approval.
-type ApprovalFn func(action *approval.PendingAction) bool
+type ApprovalFn func(ctx context.Context, action *approval.PendingAction) bool
 
 // ---- trace types ----
 

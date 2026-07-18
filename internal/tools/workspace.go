@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -266,7 +267,13 @@ func (t *ReadFileTool) Run(ctx context.Context, workspace string, params map[str
 		return "", fmt.Errorf("%q is a directory; use list_directory", relPath)
 	}
 
-	data, err := os.ReadFile(fullPath)
+	file, err := os.Open(fullPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open %q: %w", relPath, err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, int64(maxBytes)+1))
 	if err != nil {
 		return "", fmt.Errorf("failed to read %q: %w", relPath, err)
 	}
@@ -335,7 +342,7 @@ func (t *FindFilesTool) Run(ctx context.Context, workspace string, params map[st
 	if pattern == "" {
 		return "", fmt.Errorf("missing required parameter 'pattern'")
 	}
-	if filepath.IsAbs(pattern) || strings.Contains(filepath.Clean(pattern), "..") || isBlockedWorkspacePath(pattern) {
+	if filepath.IsAbs(pattern) || isPathTraversal(pattern) || isBlockedWorkspacePath(pattern) {
 		return "", fmt.Errorf("invalid or blocked pattern %q", pattern)
 	}
 	maxMatches := getIntParam(params, "max_matches", defaultMaxFindMatches, 1, 1000)
@@ -343,6 +350,9 @@ func (t *FindFilesTool) Run(ctx context.Context, workspace string, params map[st
 	root := getRoot(workspace)
 	matches := make([]string, 0)
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return nil
 		}
@@ -464,6 +474,9 @@ func (t *SearchTextTool) Run(ctx context.Context, workspace string, params map[s
 
 	hits := make([]string, 0)
 	err = filepath.WalkDir(fullPath, func(path string, d fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return nil
 		}

@@ -23,6 +23,7 @@ type Config struct {
 	// Application Settings
 	TimeoutSeconds     int
 	SessionStoragePath string
+	SessionTTLSeconds  int
 	LogLevel           string
 	AllowAutoApprove   bool
 }
@@ -48,6 +49,7 @@ func Load() (*Config, error) {
 		// Application Settings
 		TimeoutSeconds:     getEnvInt("TIMEOUT_SECONDS", 30),
 		SessionStoragePath: getEnv("SESSION_STORAGE_PATH", "data/sessions.json"),
+		SessionTTLSeconds:  getEnvInt("SESSION_TTL_SECONDS", 0),
 		LogLevel:           getEnv("LOG_LEVEL", "info"),
 		AllowAutoApprove:   getEnvBool("ALLOW_AUTO_APPROVE", false),
 	}

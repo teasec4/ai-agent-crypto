@@ -49,9 +49,11 @@ Access-Control-Allow-Origin: *
 | `GET` | `/sessions/{sessionId}` | Session detail with messages |
 | `POST` | `/ask` | Send user message |
 | `POST` | `/chat/completion` | Alias for `/ask` |
-| `POST` | `/sessions/{sessionId}/approvals/{approvalId}` | Approve or reject pending action |
+| `POST` | `/sessions/{sessionId}/stream` | Send user message and receive SSE events |
+| `POST` | `/sessions/{sessionId}/approve` | Approve pending SSE action |
+| `POST` | `/sessions/{sessionId}/reject` | Reject pending SSE action |
 
-All request/response bodies are JSON with `Content-Type: application/json`.
+Request/response bodies are JSON with `Content-Type: application/json`, except `/stream`, which responds with `text/event-stream`.
 
 ---
 
@@ -104,13 +106,11 @@ type PendingAction = {
   createdAt: string;  // ISO 8601
 };
 
-// ── Approval ────────────────────────────────────────
+// ── Approval signals for an active SSE stream ───────
 
-type ApprovalRequest = {
-  approved: boolean;
+type ApprovalSignalResponse = {
+  status: "approved" | "rejected";
 };
-
-// Approval response has same shape as AskResponse.
 
 // ── Sessions ────────────────────────────────────────
 
@@ -132,7 +132,7 @@ type SessionDetailResponse = {
   updatedAt: string;
   messageCount: number;
   messages: ChatMessageResponse[];
-  pendingActions?: PendingAction[];
+  workspace?: string;
 };
 
 type ChatMessageResponse = {
@@ -193,22 +193,17 @@ async function followUp(sessionId: string, text: string): Promise<AskResponse> {
 }
 ```
 
-### 4. Resolve approval
+### 4. Resolve SSE approval
 
 ```ts
-async function resolveApproval(
+async function approveAction(
   sessionId: string,
-  approvalId: string,
   approved: boolean,
-): Promise<AskResponse> {
-  const res = await fetch(
-    `http://localhost:8080/sessions/${sessionId}/approvals/${approvalId}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ approved }),
-    },
-  );
+): Promise<ApprovalSignalResponse> {
+  const action = approved ? "approve" : "reject";
+  const res = await fetch(`http://localhost:8080/sessions/${sessionId}/${action}`, {
+    method: "POST",
+  });
   if (!res.ok) throw new Error((await res.json()).error);
   return res.json();
 }
@@ -313,16 +308,11 @@ async function restoreSession(sessionId: string): Promise<ChatState> {
       text: m.content,
     }));
 
-  // If there are pending approvals, restore the first one
-  const pendingAction = detail.pendingActions?.length
-    ? detail.pendingActions[0]
-    : null;
-
   return {
     sessionId: detail.sessionId,
     messages,
     tracesByMessageId: {},
-    pendingAction,
+    pendingAction: null,
     loading: false,
     error: null,
   };
@@ -335,8 +325,9 @@ async function restoreSession(sessionId: string): Promise<ChatState> {
 
 ### What the UI sees
 
-1. `/ask` returns `stoppedBy: "approval_required"` with `pendingAction`.
-2. UI shows an approval card:
+1. UI sends the message with `POST /sessions/{sessionId}/stream`.
+2. The stream emits `approval_required` with `action`.
+3. UI shows an approval card:
 
 ```tsx
 function ApprovalCard({ action, onApprove, onReject }: Props) {
@@ -352,15 +343,9 @@ function ApprovalCard({ action, onApprove, onReject }: Props) {
 }
 ```
 
-3. User clicks approve/reject.
-4. UI calls `POST /sessions/{sessionId}/approvals/{approvalId}`.
-5. Response has **same shape as `/ask`**:
-
-   - `stoppedBy: "success"` → tool ran, agent answered.
-   - `stoppedBy: "approval_required"` → agent needs another risky step.
-   - `stoppedBy: "error"` → tool failed.
-
-6. If another `pendingAction` is returned, show the next approval card.
+4. User clicks approve/reject.
+5. UI calls `POST /sessions/{sessionId}/approve` or `POST /sessions/{sessionId}/reject`.
+6. The original SSE stream continues with `tool_done`, `tool_error`, another `approval_required`, or `done`.
 
 ---
 
@@ -438,7 +423,8 @@ Common HTTP status codes:
 | Status | Meaning |
 |---|---|
 | 400 | Invalid request body or missing required field |
-| 404 | Session or approval not found |
+| 404 | Session not found |
+| 409 | Session already has an active agent run |
 | 200 | Success |
 
 Check `response.ok` and display `data.error` to the user.

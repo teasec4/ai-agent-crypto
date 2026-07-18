@@ -2,6 +2,7 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,7 +35,11 @@ func NewClientWithTimeout(apiKey string, baseURL string, model string, temperatu
 }
 
 // Chat sends messages with optional tools and returns a parsed ChatResponse.
-func (c *Client) Chat(messages []Message, tools []ToolDefinition) (*ChatResponse, error) {
+func (c *Client) Chat(ctx context.Context, messages []Message, tools []ToolDefinition) (*ChatResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	reqBody := Request{
 		Model:       c.Model.Model,
 		Messages:    messages,
@@ -55,7 +60,8 @@ func (c *Client) Chat(messages []Message, tools []ToolDefinition) (*ChatResponse
 		"body_size", len(body),
 	)
 
-	req, err := http.NewRequest(
+	req, err := http.NewRequestWithContext(
+		ctx,
 		"POST",
 		c.Model.BaseURL,
 		bytes.NewBuffer(body),

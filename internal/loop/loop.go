@@ -23,6 +23,14 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if req.Context == nil {
+		req.Context = context.Background()
+	}
+	if !req.Deadline.IsZero() {
+		ctx, cancel := context.WithDeadline(req.Context, req.Deadline)
+		defer cancel()
+		req.Context = ctx
+	}
 
 	maxIter := req.MaxIterations
 	if maxIter <= 0 {
@@ -50,6 +58,21 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 	trace := []LoopIteration{}
 
 	for iterationIndex := 1; ; iterationIndex++ {
+		if err := req.Context.Err(); err != nil {
+			logger.Warn("loop stopped: context cancelled",
+				"iteration", iterationIndex-1,
+				"error", err,
+			)
+			answer := fmt.Sprintf("Выполнение остановлено: %v", err)
+			emit(req, SSEEvent{Type: EventDone, Answer: answer})
+			return LoopResult{
+				Answer:     answer,
+				Iterations: len(trace),
+				Trace:      trace,
+				StoppedBy:  StoppedByError,
+			}
+		}
+
 		if iterationIndex > maxIter {
 			logger.Warn("loop stopped: max iterations reached",
 				"iteration", iterationIndex-1,
@@ -111,7 +134,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 
 		// ---- Plan step ----
 		planStart := time.Now()
-		planResult, err := req.Planner.Plan(req.Memory.Messages)
+		planResult, err := req.Planner.Plan(req.Context, req.Memory.Messages)
 		planElapsed := time.Since(planStart).Milliseconds()
 
 		if err != nil {
@@ -145,7 +168,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 				"total_ms", time.Since(startTime).Milliseconds(),
 			)
 			req.Memory.AddAssistant(planResult.Reply)
-			req.Memory.CompactIfNeeded(req.LLMClient)
+			req.Memory.CompactIfNeeded(req.Context, req.LLMClient)
 			trace = append(trace, LoopIteration{
 				Index:       iterationIndex,
 				Outcome:     OutcomeAnswer,
@@ -167,7 +190,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 			)
 			answer := unsupportedActionReply(reason)
 			req.Memory.AddAssistant(answer)
-			req.Memory.CompactIfNeeded(req.LLMClient)
+			req.Memory.CompactIfNeeded(req.Context, req.LLMClient)
 			trace = append(trace, LoopIteration{
 				Index:       iterationIndex,
 				Outcome:     OutcomeAnswer,
@@ -238,40 +261,14 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 					}
 				}
 
-				// Callback path (SSE streaming) — wait with context+timeout
+				// Callback path (SSE streaming / CLI) — caller owns waiting policy.
 				logger.Info("approval required (callback)",
 					"iteration", iterationIndex,
 					"tool", planResult.Action,
 					"risk", pendingAction.Risk,
 				)
 
-				// Build an approval channel from the callback
-				type approvalResult struct {
-					approved bool
-				}
-				ch := make(chan approvalResult, 1)
-				go func() {
-					ch <- approvalResult{approved: req.OnApproval(pendingAction)}
-				}()
-
-				var approved bool
-				select {
-				case res := <-ch:
-					approved = res.approved
-				case <-req.Context.Done():
-					logger.Warn("approval cancelled by context",
-						"iteration", iterationIndex,
-						"tool", planResult.Action,
-						"error", req.Context.Err(),
-					)
-					approved = false
-				case <-time.After(5 * time.Minute):
-					logger.Warn("approval timed out",
-						"iteration", iterationIndex,
-						"tool", planResult.Action,
-					)
-					approved = false
-				}
+				approved := req.OnApproval(req.Context, pendingAction)
 
 				if !approved {
 					logger.Info("user rejected action",
@@ -287,7 +284,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 					req.Memory.AddAssistantToolCall(toolCallID, planResult.Action, string(argsJSON))
 					req.Memory.AddToolResult(toolCallID, fmt.Sprintf("Error: action rejected by user"))
 					req.Memory.AddAssistant(fmt.Sprintf("Действие %s отклонено.", planResult.Action))
-					req.Memory.CompactIfNeeded(req.LLMClient)
+					req.Memory.CompactIfNeeded(req.Context, req.LLMClient)
 					trace = append(trace, LoopIteration{
 						Index:       iterationIndex,
 						Outcome:     OutcomeToolCalls,
@@ -321,11 +318,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 			req.Memory.AddAssistantToolCall(toolCallID, planResult.Action, string(argsJSON))
 
 			toolStart := time.Now()
-			var ctx context.Context = req.Context
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			result, err := req.Executor.ExecuteWithWorkspace(ctx, planResult, req.Workspace)
+			result, err := req.Executor.ExecuteWithWorkspace(req.Context, planResult, req.Workspace)
 			toolElapsed := time.Since(toolStart).Milliseconds()
 
 			event := ToolEvent{
@@ -366,7 +359,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 					Result: result,
 				})
 			}
-			req.Memory.CompactIfNeeded(req.LLMClient)
+			req.Memory.CompactIfNeeded(req.Context, req.LLMClient)
 			trace = append(trace, LoopIteration{
 				Index:       iterationIndex,
 				Outcome:     OutcomeToolCalls,

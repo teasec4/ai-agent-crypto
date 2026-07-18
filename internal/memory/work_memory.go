@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -114,7 +115,7 @@ func FormatToolResult(action string, result string, err error, prefix string) st
 }
 
 // CompactIfNeeded checks if the history exceeds the threshold and compacts it.
-func (h *WorkMemory) CompactIfNeeded(llmClient llm.LlmClient) {
+func (h *WorkMemory) CompactIfNeeded(ctx context.Context, llmClient llm.LlmClient) {
 	currentLen := len(h.Messages)
 	if currentLen <= DefaultCompactAt {
 		return
@@ -128,11 +129,17 @@ func (h *WorkMemory) CompactIfNeeded(llmClient llm.LlmClient) {
 		keep = 1
 	}
 
-	// Split: old messages to summarize, recent messages to keep
-	oldMessages := h.Messages[:len(h.Messages)-keep]
-	recentMessages := h.Messages[len(h.Messages)-keep:]
+	// Split: old messages to summarize, recent messages to keep. Do not start
+	// the retained native-tool history with a tool result; it must stay paired
+	// with the preceding assistant tool_call.
+	split := len(h.Messages) - keep
+	for split > 1 && h.Messages[split].Role == RoleTool {
+		split--
+	}
+	oldMessages := h.Messages[:split]
+	recentMessages := h.Messages[split:]
 
-	summary, err := h.summarize(llmClient, oldMessages)
+	summary, err := h.summarize(ctx, llmClient, oldMessages)
 	if err != nil {
 		fallbackSummary := buildFallbackSummary(oldMessages)
 		summaryMessage := llm.Message{
@@ -152,7 +159,7 @@ func (h *WorkMemory) CompactIfNeeded(llmClient llm.LlmClient) {
 	h.lastCompactedLen = currentLen
 }
 
-func (h *WorkMemory) summarize(llmClient llm.LlmClient, messages []llm.Message) (string, error) {
+func (h *WorkMemory) summarize(ctx context.Context, llmClient llm.LlmClient, messages []llm.Message) (string, error) {
 	var sb strings.Builder
 	for _, m := range messages {
 		sb.WriteString(fmt.Sprintf("%s: %s\n", m.Role, m.Content))
@@ -163,7 +170,7 @@ func (h *WorkMemory) summarize(llmClient llm.LlmClient, messages []llm.Message) 
 		{Role: "user", Content: sb.String()},
 	}
 
-	resp, err := llmClient.Chat(msgs, nil)
+	resp, err := llmClient.Chat(ctx, msgs, nil)
 	if err != nil {
 		return "", err
 	}

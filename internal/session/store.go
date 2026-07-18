@@ -12,9 +12,10 @@ import (
 )
 
 type Store struct {
-	mu       sync.RWMutex
-	sessions map[string]*State
-	storage  Storage
+	mu        sync.RWMutex
+	persistMu sync.Mutex
+	sessions  map[string]*State
+	storage   Storage
 }
 
 type State struct {
@@ -26,6 +27,9 @@ type State struct {
 	memory    *memory.WorkMemory
 	workspace string
 	onChange  func()
+
+	runMu     sync.Mutex
+	runActive bool
 
 	// approvalCh is used by the SSE streaming loop to wait for user approval.
 	approvalMu sync.Mutex
@@ -186,6 +190,8 @@ func (store *Store) persist() {
 	if store.storage == nil {
 		return
 	}
+	store.persistMu.Lock()
+	defer store.persistMu.Unlock()
 	if err := store.storage.Save(store.persistedStates()); err != nil {
 		fmt.Printf("failed to persist sessions: %v\n", err)
 	}
@@ -243,6 +249,25 @@ func (s *State) changed() {
 	}
 }
 
+// TryStartRun marks the session as busy. Only one agent loop may mutate a
+// session's memory at a time.
+func (s *State) TryStartRun() bool {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if s.runActive {
+		return false
+	}
+	s.runActive = true
+	return true
+}
+
+// FinishRun releases the session run lock.
+func (s *State) FinishRun() {
+	s.runMu.Lock()
+	s.runActive = false
+	s.runMu.Unlock()
+}
+
 // NewApprovalChannel creates a fresh buffered channel for SSE approval.
 // Returns nil if a channel is already active (to prevent overwrite).
 func (s *State) NewApprovalChannel() chan bool {
@@ -283,11 +308,12 @@ func (s *State) SignalApproval(approved bool) {
 	}
 }
 
-const sessionTTL = 1 * time.Hour
-
-func (store *Store) CleanupExpired() int {
+func (store *Store) CleanupExpired(ttl time.Duration) int {
+	if ttl <= 0 {
+		return 0
+	}
 	store.mu.Lock()
-	cutoff := time.Now().Add(-sessionTTL)
+	cutoff := time.Now().Add(-ttl)
 	removed := 0
 	for id, state := range store.sessions {
 		state.mu.Lock()
@@ -306,14 +332,14 @@ func (store *Store) CleanupExpired() int {
 	return removed
 }
 
-func (store *Store) StartCleanup(interval time.Duration) (stop func()) {
+func (store *Store) StartCleanup(interval time.Duration, ttl time.Duration) (stop func()) {
 	ticker := time.NewTicker(interval)
 	done := make(chan struct{})
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
-				if removed := store.CleanupExpired(); removed > 0 {
+				if removed := store.CleanupExpired(ttl); removed > 0 {
 					fmt.Printf("session cleanup: removed %d expired sessions\n", removed)
 				}
 			case <-done:

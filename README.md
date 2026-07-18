@@ -68,6 +68,7 @@ See `.env.example` for all options. Key settings:
 | `OPENAI_API_KEY` | — | API key (required) |
 | `ALLOW_AUTO_APPROVE` | `false` | Auto-approve write/exec tools in `/ask` |
 | `LLM_BASE_URL` | DeepSeek | OpenAI-compatible endpoint |
+| `SESSION_TTL_SECONDS` | `0` | Session cleanup TTL; `0` keeps persisted sessions |
 
 ## Available Tools
 

@@ -1,6 +1,7 @@
 package planner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -31,7 +32,7 @@ func (p *LLMPlanner) SetLogger(logger *slog.Logger) {
 
 // Plan uses the LLM to determine the next action.
 // Tools are passed natively via the API's tools parameter.
-func (p *LLMPlanner) Plan(history []llm.Message) (PlanResult, error) {
+func (p *LLMPlanner) Plan(ctx context.Context, history []llm.Message) (PlanResult, error) {
 	tools := p.registry.ToolDefinitions()
 	messages := p.buildMessages(history)
 
@@ -41,7 +42,7 @@ func (p *LLMPlanner) Plan(history []llm.Message) (PlanResult, error) {
 		"last_role", lastRole(history),
 	)
 
-	chatResp, err := p.llmClient.Chat(messages, tools)
+	chatResp, err := p.llmClient.Chat(ctx, messages, tools)
 	if err != nil {
 		p.logger.Error("planner: llm chat failed", "error", err.Error())
 		return PlanResult{}, fmt.Errorf("llm planning failed: %w", err)

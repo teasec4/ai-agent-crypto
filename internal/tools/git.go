@@ -41,7 +41,7 @@ func (t *GitTool) Run(ctx context.Context, workspace string, params map[string]i
 	maxBytes := getIntParam(params, "max_bytes", defaultGitOutputMaxSize, 1, 512*1024)
 	root := getRoot(workspace)
 
-	if err := t.ensureGitRepo(root); err != nil {
+	if err := t.ensureGitRepo(ctx, root); err != nil {
 		return "", err
 	}
 
@@ -49,22 +49,22 @@ func (t *GitTool) Run(ctx context.Context, workspace string, params map[string]i
 	var err error
 	switch mode {
 	case "branch":
-		output, err = t.runGit(root, maxBytes, "branch", "--show-current")
+		output, err = t.runGit(ctx, root, maxBytes, "branch", "--show-current")
 	case "status":
-		output, err = t.runGit(root, maxBytes, "status", "--short", "--branch")
+		output, err = t.runGit(ctx, root, maxBytes, "status", "--short", "--branch")
 	case "changed_files":
-		output, err = t.changedFiles(root, maxBytes)
+		output, err = t.changedFiles(ctx, root, maxBytes)
 	case "diff":
-		output, err = t.diff(root, maxBytes)
+		output, err = t.diff(ctx, root, maxBytes)
 	case "branch_diff":
 		base := getStringParam(params, "base", "")
 		if base == "" {
-			base = t.defaultBaseBranch(root)
+			base = t.defaultBaseBranch(ctx, root)
 		}
-		output, err = t.branchDiff(root, base, maxBytes)
+		output, err = t.branchDiff(ctx, root, base, maxBytes)
 	case "log":
 		limit := getIntParam(params, "limit", 10, 1, 50)
-		output, err = t.runGit(root, maxBytes, "log", "--oneline", "--decorate", "-"+strconv.Itoa(limit))
+		output, err = t.runGit(ctx, root, maxBytes, "log", "--oneline", "--decorate", "-"+strconv.Itoa(limit))
 	default:
 		return "", fmt.Errorf("unsupported git_context mode %q", mode)
 	}
@@ -77,16 +77,16 @@ func (t *GitTool) Run(ctx context.Context, workspace string, params map[string]i
 	return fmt.Sprintf("git_context mode=%s\n---\n%s", mode, strings.TrimRight(output, "\n")), nil
 }
 
-func (t *GitTool) ensureGitRepo(root string) error {
-	_, err := t.runGit(root, 4096, "rev-parse", "--show-toplevel")
+func (t *GitTool) ensureGitRepo(ctx context.Context, root string) error {
+	_, err := t.runGit(ctx, root, 4096, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return fmt.Errorf("workspace is not a git repository: %w", err)
 	}
 	return nil
 }
 
-func (t *GitTool) changedFiles(root string, maxBytes int) (string, error) {
-	status, err := t.runGit(root, maxBytes, "status", "--short")
+func (t *GitTool) changedFiles(ctx context.Context, root string, maxBytes int) (string, error) {
+	status, err := t.runGit(ctx, root, maxBytes, "status", "--short")
 	if err != nil {
 		return "", err
 	}
@@ -96,12 +96,12 @@ func (t *GitTool) changedFiles(root string, maxBytes int) (string, error) {
 	return status, nil
 }
 
-func (t *GitTool) diff(root string, maxBytes int) (string, error) {
-	unstaged, err := t.runGit(root, maxBytes/2, "diff", "--no-ext-diff")
+func (t *GitTool) diff(ctx context.Context, root string, maxBytes int) (string, error) {
+	unstaged, err := t.runGit(ctx, root, maxBytes/2, "diff", "--no-ext-diff")
 	if err != nil {
 		return "", err
 	}
-	staged, err := t.runGit(root, maxBytes/2, "diff", "--cached", "--no-ext-diff")
+	staged, err := t.runGit(ctx, root, maxBytes/2, "diff", "--cached", "--no-ext-diff")
 	if err != nil {
 		return "", err
 	}
@@ -124,16 +124,16 @@ func (t *GitTool) diff(root string, maxBytes int) (string, error) {
 	return sb.String(), nil
 }
 
-func (t *GitTool) branchDiff(root, base string, maxBytes int) (string, error) {
+func (t *GitTool) branchDiff(ctx context.Context, root, base string, maxBytes int) (string, error) {
 	if strings.TrimSpace(base) == "" {
 		return "", fmt.Errorf("base branch is required; e.g. main")
 	}
 	mergeBaseRange := base + "...HEAD"
-	output, err := t.runGit(root, maxBytes, "diff", "--stat", mergeBaseRange)
+	output, err := t.runGit(ctx, root, maxBytes, "diff", "--stat", mergeBaseRange)
 	if err != nil {
 		return "", err
 	}
-	fullDiff, err := t.runGit(root, maxBytes, "diff", "--no-ext-diff", mergeBaseRange)
+	fullDiff, err := t.runGit(ctx, root, maxBytes, "diff", "--no-ext-diff", mergeBaseRange)
 	if err != nil {
 		return "", err
 	}
@@ -143,20 +143,26 @@ func (t *GitTool) branchDiff(root, base string, maxBytes int) (string, error) {
 	return fmt.Sprintf("Diff against %s:\n%s\n%s", base, output, fullDiff), nil
 }
 
-func (t *GitTool) defaultBaseBranch(root string) string {
+func (t *GitTool) defaultBaseBranch(ctx context.Context, root string) string {
 	for _, branch := range []string{"main", "master"} {
-		if _, err := t.runGit(root, 4096, "rev-parse", "--verify", branch); err == nil {
+		if _, err := t.runGit(ctx, root, 4096, "rev-parse", "--verify", branch); err == nil {
 			return branch
 		}
-		if _, err := t.runGit(root, 4096, "rev-parse", "--verify", "origin/"+branch); err == nil {
+		if _, err := t.runGit(ctx, root, 4096, "rev-parse", "--verify", "origin/"+branch); err == nil {
 			return "origin/" + branch
 		}
 	}
 	return ""
 }
 
-func (t *GitTool) runGit(root string, maxBytes int, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+func (t *GitTool) runGit(ctx context.Context, root string, maxBytes int, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	subCtx, cancel := context.WithTimeout(ctx, defaultGitTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(subCtx, "git", args...)
 	cmd.Dir = root
 
 	var stdout bytes.Buffer
@@ -164,26 +170,18 @@ func (t *GitTool) runGit(root string, maxBytes int, args ...string) (string, err
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	done := make(chan error, 1)
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("failed to start git %s: %w", strings.Join(args, " "), err)
-	}
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			message := strings.TrimSpace(stderr.String())
-			if message == "" {
-				message = err.Error()
-			}
-			return "", fmt.Errorf("git %s failed: %s", strings.Join(args, " "), message)
+	if err := cmd.Run(); err != nil {
+		if subCtx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("git %s timed out", strings.Join(args, " "))
 		}
-	case <-time.After(defaultGitTimeout):
-		_ = cmd.Process.Kill()
-		return "", fmt.Errorf("git %s timed out", strings.Join(args, " "))
+		if subCtx.Err() != nil {
+			return "", fmt.Errorf("git %s cancelled: %w", strings.Join(args, " "), subCtx.Err())
+		}
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return "", fmt.Errorf("git %s failed: %s", strings.Join(args, " "), message)
 	}
 
 	output := stdout.String()

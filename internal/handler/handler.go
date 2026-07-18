@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -79,19 +80,25 @@ func (h *AgentHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	if state == nil {
 		return
 	}
+	if !state.TryStartRun() {
+		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "session already has an active agent run"})
+		return
+	}
+	defer state.FinishRun()
 
 	var result harness.HarnessExecutionResult
 	sessionWorkspace := state.Workspace()
 	state.WithMemory(func(workMemory *memory.WorkMemory) {
-		result = h.harness.RunWithMemory(message, workMemory, sessionWorkspace)
+		result = h.harness.RunWithMemory(r.Context(), message, workMemory, sessionWorkspace)
 	})
 
 	writeJSON(w, http.StatusOK, AskResponse{
-		SessionID:  state.ID,
-		Answer:     result.LoopResult.Answer,
-		Iterations: result.LoopResult.Iterations,
-		StoppedBy:  string(result.LoopResult.StoppedBy),
-		Trace:      result.LoopResult.Trace,
+		SessionID:     state.ID,
+		Answer:        result.LoopResult.Answer,
+		Iterations:    result.LoopResult.Iterations,
+		StoppedBy:     string(result.LoopResult.StoppedBy),
+		Trace:         result.LoopResult.Trace,
+		PendingAction: result.LoopResult.PendingAction,
 	})
 }
 
@@ -121,6 +128,11 @@ func (h *AgentHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "message is required"})
 		return
 	}
+	if !state.TryStartRun() {
+		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "session already has an active agent run"})
+		return
+	}
+	defer state.FinishRun()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -147,41 +159,40 @@ func (h *AgentHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 
 	sessionWorkspace := state.Workspace()
 
-	var workMemory *memory.WorkMemory
-	state.WithMemory(func(wm *memory.WorkMemory) {
-		workMemory = wm
+	var result harness.HarnessExecutionResult
+	state.WithMemory(func(workMemory *memory.WorkMemory) {
+		result = h.harness.RunWithMemoryStreaming(
+			r.Context(),
+			message,
+			workMemory,
+			sessionWorkspace,
+			func(event loop.SSEEvent) { writeSSE(w, flusher, event) },
+			func(ctx context.Context, action *approval.PendingAction) bool {
+				writeSSE(w, flusher, loop.SSEEvent{
+					Type:   loop.EventApprovalRequired,
+					Tool:   action.Tool,
+					Args:   action.Args,
+					Action: action,
+				})
+				var approved bool
+				select {
+				case approved = <-approvalCh:
+				case <-ctx.Done():
+					h.logger.Info("SSE: approval cancelled", "tool", action.Tool, "error", ctx.Err())
+					return false
+				case <-time.After(approvalTimeout):
+					h.logger.Info("SSE: approval timed out", "tool", action.Tool)
+					return false
+				}
+				if approved {
+					h.logger.Info("SSE: user approved", "tool", action.Tool)
+				} else {
+					h.logger.Info("SSE: user rejected", "tool", action.Tool)
+				}
+				return approved
+			},
+		)
 	})
-
-	result := h.harness.RunWithMemoryStreaming(
-		message,
-		workMemory,
-		sessionWorkspace,
-		func(event loop.SSEEvent) { writeSSE(w, flusher, event) },
-		func(action *approval.PendingAction) bool {
-			writeSSE(w, flusher, loop.SSEEvent{
-				Type:   loop.EventApprovalRequired,
-				Tool:   action.Tool,
-				Args:   action.Args,
-				Action: action,
-			})
-			var approved bool
-			select {
-			case approved = <-approvalCh:
-			case <-r.Context().Done():
-				h.logger.Info("SSE: client disconnected while waiting for approval", "tool", action.Tool)
-				return false
-			case <-time.After(approvalTimeout):
-				h.logger.Info("SSE: approval timed out", "tool", action.Tool)
-				return false
-			}
-			if approved {
-				h.logger.Info("SSE: user approved", "tool", action.Tool)
-			} else {
-				h.logger.Info("SSE: user rejected", "tool", action.Tool)
-			}
-			return approved
-		},
-	)
 
 	// Send close event — the loop already sent the final EventDone
 	fmt.Fprintf(w, "event: close\ndata: {}\n\n")

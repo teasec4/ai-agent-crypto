@@ -30,9 +30,10 @@ func main() {
 	}
 	agentHandler := handler.NewAgentHandler(h, sessionStore)
 
-	// Start periodic session cleanup (runs every 10 minutes)
-	stopCleanup := sessionStore.StartCleanup(10 * time.Minute)
-	defer stopCleanup()
+	if cfg.SessionTTLSeconds > 0 {
+		stopCleanup := sessionStore.StartCleanup(10*time.Minute, time.Duration(cfg.SessionTTLSeconds)*time.Second)
+		defer stopCleanup()
+	}
 
 	mux := http.NewServeMux()
 	agentHandler.RegisterRoutes(mux)

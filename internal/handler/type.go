@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"ai-agent/internal/approval"
 	"ai-agent/internal/llm"
 	"ai-agent/internal/loop"
 )
@@ -11,11 +12,12 @@ type AskRequest struct {
 }
 
 type AskResponse struct {
-	SessionID  string               `json:"sessionId"`
-	Answer     string               `json:"answer"`
-	Iterations int                  `json:"iterations"`
-	StoppedBy  string               `json:"stoppedBy"`
-	Trace      []loop.LoopIteration `json:"trace,omitempty"`
+	SessionID     string                  `json:"sessionId"`
+	Answer        string                  `json:"answer"`
+	Iterations    int                     `json:"iterations"`
+	StoppedBy     string                  `json:"stoppedBy"`
+	Trace         []loop.LoopIteration    `json:"trace,omitempty"`
+	PendingAction *approval.PendingAction `json:"pendingAction,omitempty"`
 }
 
 type SetWorkspaceRequest struct {
