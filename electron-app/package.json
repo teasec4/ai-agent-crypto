@@ -1,0 +1,25 @@
+{
+  "name": "ai-agent-electron",
+  "version": "1.0.0",
+  "description": "Electron desktop client for the AI agent.",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"tsc -p tsconfig.electron.json --watch\" \"vite --host 127.0.0.1 --port 5173\" \"wait-on dist-electron/main.js tcp:127.0.0.1:5173 && VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "tsc -p tsconfig.electron.json && vite build",
+    "preview": "npm run build && electron .",
+    "start": "npm run build && electron .",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@types/node": "^26.1.1",
+    "concurrently": "^9.2.4",
+    "electron": "^43.1.1",
+    "svelte": "^5.56.6",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3",
+    "wait-on": "^8.0.5"
+  }
+}

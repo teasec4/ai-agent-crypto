@@ -43,11 +43,11 @@ type HarnessExecutionResult struct {
 func New(cfg *config.Config) *Harness {
 	logger := newLogger(cfg)
 
-	cryptoTool := tools.NewCryptoTool()
-	cryptoTool.SetAPIKey(cfg.CoinGeckoApiKey)
+	// нам не нужен ключ тут
+	// cryptoTool.SetAPIKey(cfg.CoinGeckoApiKey)
 
 	reg := registry.New(
-		cryptoTool,
+		tools.NewCryptoTool(),
 		tools.NewGitTool(),
 		tools.NewListDirectoryTool(),
 		tools.NewReadFileTool(),

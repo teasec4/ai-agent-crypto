@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.shared.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "types": ["svelte"]
+  },
+  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.svelte", "vite.config.mts"]
+}
