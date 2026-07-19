@@ -151,3 +151,40 @@ func TestReadFileTool_Blocked(t *testing.T) {
 		t.Error("reading .git/config should be blocked")
 	}
 }
+
+func TestDeletePathTool_RunDeletesDirectory(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "scratch", "nested")
+	if err := os.MkdirAll(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "note.txt"), []byte("temporary"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &DeletePathTool{}
+	result, err := tool.Run(context.Background(), dir, map[string]interface{}{
+		"path": "scratch",
+	})
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if !strings.Contains(result, "Deleted directory scratch") {
+		t.Fatalf("unexpected result: %s", result)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "scratch")); !os.IsNotExist(err) {
+		t.Fatalf("expected scratch directory to be deleted, stat err=%v", err)
+	}
+}
+
+func TestDeletePathTool_BlocksWorkspaceRoot(t *testing.T) {
+	dir := t.TempDir()
+	tool := &DeletePathTool{}
+
+	_, err := tool.Run(context.Background(), dir, map[string]interface{}{
+		"path": ".",
+	})
+	if err == nil {
+		t.Fatal("deleting workspace root should fail")
+	}
+}

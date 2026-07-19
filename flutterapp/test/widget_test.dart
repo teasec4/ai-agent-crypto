@@ -98,16 +98,26 @@ void main() {
     ApiService.configureForTesting(
       baseUriOverride: Uri.parse('http://agent.test'),
       client: MockClient((request) async {
-        if (request.method == 'GET' &&
-            request.url.path == '/sessions/session-1') {
+        if (request.method == 'POST' &&
+            request.url.path == '/sessions/session-1/connect') {
           return http.Response(
-            '{"id":"session-1","sessionId":"session-1","messageCount":2,"workspace":"/Users/me/alpha","messages":[{"role":"user","content":"previous question"},{"role":"assistant","content":"previous answer"}]}',
+            '{"clientId":"client-1","role":"writer","writerClientId":"client-1","session":{"id":"session-1","sessionId":"session-1","messageCount":2,"workspace":"/Users/me/alpha","writerClientId":"client-1","messages":[{"role":"user","content":"previous question"},{"role":"assistant","content":"previous answer"}]}}',
             200,
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path == '/sessions/session-1/events') {
+          return http.Response(
+            'event: connected\n'
+            'data: {"type":"connected","clientId":"client-1","writerClientId":"client-1"}\n\n',
+            200,
+            headers: {'content-type': 'text/event-stream'},
           );
         }
         if (request.method == 'POST' &&
             request.url.path == '/sessions/session-1/stream') {
           expect(request.body, contains('hello agent'));
+          expect(request.body, contains('client-1'));
           return http.Response(
             'event: done\n'
             'data: {"type":"done","answer":"Hello from agent"}\n\n'

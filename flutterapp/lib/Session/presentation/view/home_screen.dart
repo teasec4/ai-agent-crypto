@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutterapp/Session/presentation/view/detail_screen.dart';
-import 'package:flutterapp/Session/presentation/view/project_picker_screen.dart';
 import 'package:flutterapp/Session/presentation/view/workspace_browser_screen.dart';
 import 'package:flutterapp/Session/presentation/view/widgets/project_list_tile.dart';
 import 'package:flutterapp/Session/service/api_service.dart';
 import 'package:flutterapp/Session/service/domain/response.dart';
+
+const _lanServerPreset = 'http://192.168.31.89:8080';
 
 class ProjectHubScreen extends StatefulWidget {
   const ProjectHubScreen({super.key});
@@ -54,6 +55,11 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
     }
   }
 
+  void _useLanServerPreset() {
+    _serverController.text = _lanServerPreset;
+    _applyServerUrl();
+  }
+
   void _openNewProject() {
     Navigator.of(
       context,
@@ -100,16 +106,6 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
                     icon: const Icon(Icons.add),
                     label: const Text('New Project'),
                   ),
-                  const SizedBox(height: 10),
-                  OutlinedButton.icon(
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const ProjectPickerScreen(),
-                      ),
-                    ),
-                    icon: const Icon(Icons.folder_open),
-                    label: const Text('Open Existing'),
-                  ),
                   const SizedBox(height: 16),
                   ExpansionTile(
                     tilePadding: EdgeInsets.zero,
@@ -124,7 +120,7 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
                         controller: _serverController,
                         decoration: const InputDecoration(
                           labelText: 'API URL',
-                          hintText: 'http://192.168.1.20:8080',
+                          hintText: _lanServerPreset,
                           border: OutlineInputBorder(),
                         ),
                         keyboardType: TextInputType.url,
@@ -132,13 +128,22 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
                         onSubmitted: (_) => _applyServerUrl(),
                       ),
                       const SizedBox(height: 8),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: OutlinedButton.icon(
-                          onPressed: _applyServerUrl,
-                          icon: const Icon(Icons.link),
-                          label: const Text('Use Server'),
-                        ),
+                      Wrap(
+                        alignment: WrapAlignment.end,
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          ActionChip(
+                            avatar: const Icon(Icons.wifi, size: 18),
+                            label: const Text('192.168.31.89'),
+                            onPressed: _useLanServerPreset,
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _applyServerUrl,
+                            icon: const Icon(Icons.link),
+                            label: const Text('Use Server'),
+                          ),
+                        ],
                       ),
                       if (_serverStatus != null)
                         Padding(

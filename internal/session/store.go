@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
@@ -9,6 +10,11 @@ import (
 	"ai-agent/internal/id"
 	"ai-agent/internal/llm"
 	"ai-agent/internal/memory"
+)
+
+const (
+	writerRequestTTL   = time.Minute
+	writerConnectGrace = 15 * time.Second
 )
 
 type Store struct {
@@ -34,6 +40,36 @@ type State struct {
 	// approvalCh is used by the SSE streaming loop to wait for user approval.
 	approvalMu sync.Mutex
 	approvalCh chan bool
+
+	controlMu            sync.Mutex
+	writerClientID       string
+	connectedClientIDs   map[string]time.Time
+	pendingWriterRequest *WriterRequest
+
+	eventMu     sync.Mutex
+	subscribers map[string]chan any
+}
+
+type ClientRole string
+
+const (
+	RoleWriter ClientRole = "writer"
+	RoleViewer ClientRole = "viewer"
+)
+
+type ClientAccess struct {
+	ClientID             string         `json:"clientId"`
+	Role                 ClientRole     `json:"role"`
+	WriterClientID       string         `json:"writerClientId,omitempty"`
+	PendingWriterRequest *WriterRequest `json:"pendingWriterRequest,omitempty"`
+}
+
+type WriterRequest struct {
+	ID           string    `json:"id"`
+	FromClientID string    `json:"fromClientId"`
+	ToClientID   string    `json:"toClientId,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+	ExpiresAt    time.Time `json:"expiresAt"`
 }
 
 type Snapshot struct {
@@ -81,6 +117,7 @@ func (store *Store) Create() *State {
 		UpdatedAt: now,
 		memory:    memory.NewDefaultWorkMemory(),
 	}
+	state.initRuntimeFields()
 	store.attachOnChange(state)
 
 	store.mu.Lock()
@@ -234,12 +271,23 @@ func stateFromPersisted(persisted PersistedState) *State {
 		messages = memory.NewDefaultWorkMemory().Messages
 	}
 
-	return &State{
+	state := &State{
 		ID:        persisted.ID,
 		CreatedAt: persisted.CreatedAt,
 		UpdatedAt: persisted.UpdatedAt,
 		memory:    &memory.WorkMemory{Messages: messages},
 		workspace: persisted.Workspace,
+	}
+	state.initRuntimeFields()
+	return state
+}
+
+func (s *State) initRuntimeFields() {
+	if s.connectedClientIDs == nil {
+		s.connectedClientIDs = make(map[string]time.Time)
+	}
+	if s.subscribers == nil {
+		s.subscribers = make(map[string]chan any)
 	}
 }
 
@@ -247,6 +295,264 @@ func (s *State) changed() {
 	if s.onChange != nil {
 		s.onChange()
 	}
+}
+
+func (s *State) ConnectClient(clientID string) ClientAccess {
+	if clientID == "" {
+		clientID = id.New()
+	}
+
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	s.initRuntimeFields()
+	now := time.Now()
+	s.connectedClientIDs[clientID] = now
+	s.expireWriterRequestLocked()
+	if s.writerClientID == "" || !s.writerActiveLocked(now) {
+		s.writerClientID = clientID
+		s.pendingWriterRequest = nil
+	}
+	return s.accessLocked(clientID)
+}
+
+func (s *State) ClientAccess(clientID string) ClientAccess {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	s.expireWriterRequestLocked()
+	return s.accessLocked(clientID)
+}
+
+func (s *State) IsWriter(clientID string) bool {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	return clientID != "" && s.writerClientID == clientID
+}
+
+func (s *State) RequestWriter(clientID string) (ClientAccess, error) {
+	if clientID == "" {
+		return ClientAccess{}, fmt.Errorf("clientId is required")
+	}
+
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	s.initRuntimeFields()
+	now := time.Now()
+	s.connectedClientIDs[clientID] = now
+	s.expireWriterRequestLocked()
+
+	if s.writerClientID == "" || s.writerClientID == clientID || !s.writerActiveLocked(now) {
+		s.writerClientID = clientID
+		s.pendingWriterRequest = nil
+		return s.accessLocked(clientID), nil
+	}
+	if s.pendingWriterRequest != nil {
+		if s.pendingWriterRequest.FromClientID == clientID {
+			return s.accessLocked(clientID), nil
+		}
+		return ClientAccess{}, fmt.Errorf("writer request already pending")
+	}
+	s.pendingWriterRequest = &WriterRequest{
+		ID:           id.New(),
+		FromClientID: clientID,
+		ToClientID:   s.writerClientID,
+		CreatedAt:    now,
+		ExpiresAt:    now.Add(writerRequestTTL),
+	}
+	return s.accessLocked(clientID), nil
+}
+
+func (s *State) ApproveWriterRequest(clientID, requestID string) (ClientAccess, error) {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	request, err := s.pendingRequestForWriterLocked(clientID, requestID)
+	if err != nil {
+		return ClientAccess{}, err
+	}
+	s.writerClientID = request.FromClientID
+	s.pendingWriterRequest = nil
+	return s.accessLocked(s.writerClientID), nil
+}
+
+func (s *State) RejectWriterRequest(clientID, requestID string) (ClientAccess, error) {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	_, err := s.pendingRequestForWriterLocked(clientID, requestID)
+	if err != nil {
+		return ClientAccess{}, err
+	}
+	s.pendingWriterRequest = nil
+	return s.accessLocked(clientID), nil
+}
+
+func (s *State) ReleaseWriter(clientID string) (ClientAccess, error) {
+	if clientID == "" {
+		return ClientAccess{}, fmt.Errorf("clientId is required")
+	}
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	if s.writerClientID != clientID {
+		return ClientAccess{}, fmt.Errorf("client is not the writer")
+	}
+	if s.pendingWriterRequest != nil {
+		s.writerClientID = s.pendingWriterRequest.FromClientID
+		s.pendingWriterRequest = nil
+	} else {
+		s.writerClientID = s.nextSubscriberWriterLocked(clientID)
+	}
+	return s.accessLocked(clientID), nil
+}
+
+func (s *State) Subscribe(clientID string) (<-chan any, func() (ClientAccess, bool)) {
+	if clientID == "" {
+		clientID = id.New()
+	}
+	ch := make(chan any, 64)
+	s.eventMu.Lock()
+	s.initRuntimeFields()
+	s.subscribers[clientID] = ch
+	s.eventMu.Unlock()
+
+	return ch, func() (ClientAccess, bool) {
+		s.eventMu.Lock()
+		if s.subscribers[clientID] == ch {
+			delete(s.subscribers, clientID)
+			close(ch)
+		}
+		s.eventMu.Unlock()
+		return s.disconnectClient(clientID)
+	}
+}
+
+func (s *State) disconnectClient(clientID string) (ClientAccess, bool) {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	delete(s.connectedClientIDs, clientID)
+
+	writerChanged := false
+	wasWriter := s.writerClientID == clientID && !s.hasSubscriber(clientID)
+	if s.pendingWriterRequest != nil && s.pendingWriterRequest.FromClientID == clientID {
+		s.pendingWriterRequest = nil
+	}
+	if s.pendingWriterRequest != nil && s.pendingWriterRequest.ToClientID == clientID {
+		if wasWriter && s.clientActiveLocked(s.pendingWriterRequest.FromClientID, time.Now()) {
+			s.writerClientID = s.pendingWriterRequest.FromClientID
+			writerChanged = true
+		}
+		s.pendingWriterRequest = nil
+	}
+	if wasWriter && s.writerClientID == clientID {
+		s.writerClientID = s.nextSubscriberWriterLocked(clientID)
+		writerChanged = true
+	}
+	return s.accessLocked(clientID), writerChanged
+}
+
+func (s *State) Broadcast(event any) {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	for _, ch := range s.subscribers {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+}
+
+func (s *State) accessLocked(clientID string) ClientAccess {
+	s.expireWriterRequestLocked()
+	role := RoleViewer
+	if clientID != "" && s.writerClientID == clientID {
+		role = RoleWriter
+	}
+	return ClientAccess{
+		ClientID:             clientID,
+		Role:                 role,
+		WriterClientID:       s.writerClientID,
+		PendingWriterRequest: cloneWriterRequest(s.pendingWriterRequest),
+	}
+}
+
+func (s *State) pendingRequestForWriterLocked(clientID, requestID string) (*WriterRequest, error) {
+	s.expireWriterRequestLocked()
+	if clientID == "" {
+		return nil, fmt.Errorf("clientId is required")
+	}
+	if s.writerClientID != clientID {
+		return nil, fmt.Errorf("client is not the writer")
+	}
+	if s.pendingWriterRequest == nil {
+		return nil, fmt.Errorf("no writer request is pending")
+	}
+	if requestID != "" && s.pendingWriterRequest.ID != requestID {
+		return nil, fmt.Errorf("writer request not found")
+	}
+	return cloneWriterRequest(s.pendingWriterRequest), nil
+}
+
+func (s *State) expireWriterRequestLocked() {
+	if s.pendingWriterRequest != nil && time.Now().After(s.pendingWriterRequest.ExpiresAt) {
+		s.pendingWriterRequest = nil
+	}
+}
+
+func (s *State) writerActiveLocked(now time.Time) bool {
+	if s.writerClientID == "" {
+		return false
+	}
+	return s.clientActiveLocked(s.writerClientID, now)
+}
+
+func (s *State) clientActiveLocked(clientID string, now time.Time) bool {
+	if clientID == "" {
+		return false
+	}
+	if s.hasSubscriber(clientID) {
+		return true
+	}
+	connectedAt, ok := s.connectedClientIDs[clientID]
+	return ok && now.Sub(connectedAt) <= writerConnectGrace
+}
+
+func (s *State) nextSubscriberWriterLocked(excludeClientID string) string {
+	s.eventMu.Lock()
+	ids := make([]string, 0, len(s.subscribers))
+	for clientID := range s.subscribers {
+		if clientID != "" && clientID != excludeClientID {
+			ids = append(ids, clientID)
+		}
+	}
+	s.eventMu.Unlock()
+
+	sort.Slice(ids, func(i, j int) bool {
+		left, leftOK := s.connectedClientIDs[ids[i]]
+		right, rightOK := s.connectedClientIDs[ids[j]]
+		if leftOK != rightOK {
+			return leftOK
+		}
+		if !left.Equal(right) {
+			return left.Before(right)
+		}
+		return ids[i] < ids[j]
+	})
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
+}
+
+func (s *State) hasSubscriber(clientID string) bool {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	_, ok := s.subscribers[clientID]
+	return ok
+}
+
+func cloneWriterRequest(req *WriterRequest) *WriterRequest {
+	if req == nil {
+		return nil
+	}
+	clone := *req
+	return &clone
 }
 
 // TryStartRun marks the session as busy. Only one agent loop may mutate a

@@ -56,6 +56,7 @@ func New(cfg *config.Config) *Harness {
 		tools.NewReadProjectMemoryTool(),
 		tools.NewProposeMemoryUpdateTool(),
 		tools.NewCreateDirectoryTool(),
+		tools.NewDeletePathTool(),
 		tools.NewWriteFileTool(),
 		tools.NewEditFileTool(),
 		tools.NewCommandTool(),
@@ -121,6 +122,7 @@ func (h *Harness) Run(ctx context.Context, req RunRequest) HarnessExecutionResul
 		"streaming", req.OnEvent != nil,
 	)
 
+	h.closeDanglingUserTurn(req.Memory)
 	req.Memory.AddUser(req.Task)
 
 	loopReq := h.buildLoopRequest(ctx, req)
@@ -136,6 +138,18 @@ func (h *Harness) Run(ctx context.Context, req RunRequest) HarnessExecutionResul
 		LoopResult: result,
 		Task:       req.Task,
 	}
+}
+
+func (h *Harness) closeDanglingUserTurn(workMemory *memory.WorkMemory) {
+	if workMemory == nil || len(workMemory.Messages) == 0 {
+		return
+	}
+	last := workMemory.Messages[len(workMemory.Messages)-1]
+	if last.Role != memory.RoleUser {
+		return
+	}
+	h.logger.Warn("closing dangling user turn before starting a new task")
+	workMemory.AddAssistant("Предыдущий запрос был остановлен без финального ответа. Перехожу к следующему запросу.")
 }
 
 func newLogger(cfg *config.Config) *slog.Logger {

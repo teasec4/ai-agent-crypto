@@ -36,12 +36,12 @@ Use this project-first flow for the app UI:
 2. Show New Project plus the existing projects list on the same screen.
 3. For New Project, browse folders on the backend computer with `/workspace/roots` and `/workspace/browse`.
 4. Create the hidden backend session with `POST /sessions`.
-5. Bind it to the chosen folder with `POST /sessions/{sessionId}/workspace`.
-6. Send messages through `POST /sessions/{sessionId}/stream`.
-7. Render SSE events as they arrive.
-8. If `approval_required` arrives, show approval UI.
-9. Call `/approve` or `/reject`.
-10. When `done` arrives, show the final assistant answer.
+5. Connect the device with `POST /sessions/{sessionId}/connect` and keep the returned `clientId`.
+6. Open `GET /sessions/{sessionId}/events?clientId=...` for shared live updates.
+7. Bind the project folder with `POST /sessions/{sessionId}/workspace` using `clientId`.
+8. Send messages through `POST /sessions/{sessionId}/stream` using `clientId`.
+9. Render direct stream events for the writer and shared `/events` updates for other devices.
+10. If `approval_required` arrives, only the writer calls `/approve` or `/reject`.
 
 `/ask` is still available, but `/stream` is better for UI because it shows thinking/tool progress and supports interactive approvals.
 
@@ -81,6 +81,60 @@ Response:
 
 Store `sessionId` in client state. Reuse it for follow-up messages.
 
+## Connect Client
+
+Each opened app window/device connects to a session and receives a role. The first connected client becomes `writer`; later clients become `viewer` until control is handed off.
+
+Request:
+
+```http
+POST /sessions/abc123/connect
+Content-Type: application/json
+```
+
+```json
+{
+  "clientId": "optional-existing-client-id"
+}
+```
+
+Response:
+
+```json
+{
+  "clientId": "client-phone",
+  "role": "writer",
+  "writerClientId": "client-phone",
+  "session": {
+    "id": "abc123",
+    "sessionId": "abc123",
+    "messageCount": 0,
+    "messages": []
+  }
+}
+```
+
+## Live Session Events
+
+Open this stream after connect. It is shared session state: viewers see messages, tool progress, final answers, and writer handoff events.
+
+```http
+GET /sessions/abc123/events?clientId=client-phone
+Accept: text/event-stream
+```
+
+Common events:
+
+| Event | Meaning |
+|---|---|
+| `message` | A client added a user message |
+| `tool_start`, `tool_done`, `tool_error` | Agent tool progress |
+| `approval_required` | Writer must approve a tool action |
+| `done` | Final assistant answer |
+| `writer_request_created` | Viewer requested control |
+| `writer_request_resolved` | Writer approved/rejected the request |
+| `writer_changed` | Writer role moved to another client |
+
 ## Set Workspace
 
 The workspace is the project folder where file/git/command tools operate.
@@ -94,7 +148,8 @@ Content-Type: application/json
 
 ```json
 {
-  "path": "/Users/me/project"
+  "path": "/Users/me/project",
+  "clientId": "client-phone"
 }
 ```
 
@@ -262,7 +317,8 @@ Accept: text/event-stream
 
 ```json
 {
-  "message": "найди цену ETH и потом объясни что сделал"
+  "message": "найди цену ETH и потом объясни что сделал",
+  "clientId": "client-phone"
 }
 ```
 
@@ -312,12 +368,19 @@ event: approval_required
 data: {"type":"approval_required","tool":"write_file","args":{"path":"notes.md"},"action":{"id":"...","tool":"write_file","risk":"write","summary":"Create file notes.md","preview":"...","args":{"path":"notes.md"},"createdAt":"..."}}
 ```
 
-Client should show a confirmation card.
+Client should show a confirmation card only when it is the current writer.
 
 Approve:
 
 ```http
 POST /sessions/abc123/approve
+Content-Type: application/json
+```
+
+```json
+{
+  "clientId": "client-phone"
+}
 ```
 
 Response:
@@ -332,6 +395,13 @@ Reject:
 
 ```http
 POST /sessions/abc123/reject
+Content-Type: application/json
+```
+
+```json
+{
+  "clientId": "client-phone"
+}
 ```
 
 Response:
@@ -343,6 +413,37 @@ Response:
 ```
 
 Important: approval/rejection is sent as a separate HTTP request while the original SSE stream remains open.
+
+## Writer Handoff
+
+A viewer can request control:
+
+```http
+POST /sessions/abc123/writer/request
+Content-Type: application/json
+```
+
+```json
+{
+  "clientId": "client-laptop"
+}
+```
+
+The current writer receives `writer_request_created` on `/events`. To approve:
+
+```http
+POST /sessions/abc123/writer/approve
+Content-Type: application/json
+```
+
+```json
+{
+  "clientId": "client-phone",
+  "requestId": "request-id"
+}
+```
+
+To reject, use `POST /sessions/abc123/writer/reject` with the same body. When approved, every connected client receives `writer_changed`.
 
 ## Load Existing Session
 

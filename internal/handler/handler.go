@@ -44,6 +44,12 @@ func (h *AgentHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sessions", h.ListSessions)
 	mux.HandleFunc("GET /sessions/{sessionID}", h.GetSession)
 	mux.HandleFunc("DELETE /sessions/{sessionID}", h.DeleteSession)
+	mux.HandleFunc("POST /sessions/{sessionID}/connect", h.ConnectSession)
+	mux.HandleFunc("GET /sessions/{sessionID}/events", h.SessionEvents)
+	mux.HandleFunc("POST /sessions/{sessionID}/writer/request", h.RequestWriter)
+	mux.HandleFunc("POST /sessions/{sessionID}/writer/approve", h.ApproveWriterRequest)
+	mux.HandleFunc("POST /sessions/{sessionID}/writer/reject", h.RejectWriterRequest)
+	mux.HandleFunc("POST /sessions/{sessionID}/writer/release", h.ReleaseWriter)
 	mux.HandleFunc("POST /sessions/{sessionID}/workspace", h.SetWorkspace)
 	mux.HandleFunc("POST /sessions", h.CreateSession)
 	mux.HandleFunc("GET /workspace/roots", h.WorkspaceRoots)
@@ -135,6 +141,10 @@ func (h *AgentHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "message is required"})
 		return
 	}
+	clientID := strings.TrimSpace(req.ClientID)
+	if !h.requireWriter(w, state, clientID) {
+		return
+	}
 	if !state.TryStartRun() {
 		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "session already has an active agent run"})
 		return
@@ -165,6 +175,7 @@ func (h *AgentHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	sessionWorkspace := state.Workspace()
+	state.Broadcast(LiveEvent{Type: "message", ClientID: clientID, Role: memory.RoleUser, Content: message})
 
 	var result harness.HarnessExecutionResult
 	state.WithMemory(func(workMemory *memory.WorkMemory) {
@@ -173,7 +184,10 @@ func (h *AgentHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 			Memory:          workMemory,
 			Workspace:       sessionWorkspace,
 			RequireApproval: true,
-			OnEvent:         func(event loop.SSEEvent) { writeSSE(w, flusher, event) },
+			OnEvent: func(event loop.SSEEvent) {
+				writeSSE(w, flusher, event)
+				state.Broadcast(liveEventFromLoop(clientID, event))
+			},
 			OnApproval: func(ctx context.Context, action *approval.PendingAction) bool {
 				writeSSE(w, flusher, loop.SSEEvent{
 					Type:   loop.EventApprovalRequired,
@@ -226,6 +240,14 @@ func (h *AgentHandler) ApproveAction(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "session not found"})
 		return
 	}
+	var req WriterRequestBody
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+	if !h.requireWriter(w, state, strings.TrimSpace(req.ClientID)) {
+		return
+	}
 
 	h.logger.Info("SSE approve signal received", "session", sessionID)
 	state.SignalApproval(true)
@@ -242,6 +264,14 @@ func (h *AgentHandler) RejectAction(w http.ResponseWriter, r *http.Request) {
 	state, ok := h.sessions.Get(sessionID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "session not found"})
+		return
+	}
+	var req WriterRequestBody
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+	if !h.requireWriter(w, state, strings.TrimSpace(req.ClientID)) {
 		return
 	}
 
@@ -276,15 +306,8 @@ func (h *AgentHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 
 	snapshot := state.Snapshot(true)
 	messages := visibleMessages(snapshot.Messages)
-	writeJSON(w, http.StatusOK, SessionDetailResponse{
-		ID:           snapshot.ID,
-		SessionID:    snapshot.ID,
-		CreatedAt:    snapshot.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:    snapshot.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		MessageCount: len(messages),
-		Messages:     messages,
-		Workspace:    snapshot.Workspace,
-	})
+	access := state.ClientAccess(strings.TrimSpace(r.URL.Query().Get("clientId")))
+	writeJSON(w, http.StatusOK, sessionDetailResponse(snapshot, messages, access))
 }
 
 func (h *AgentHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
@@ -326,6 +349,10 @@ func (h *AgentHandler) SetWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "path is required"})
 		return
 	}
+	clientID := strings.TrimSpace(req.ClientID)
+	if !h.requireWriter(w, state, clientID) {
+		return
+	}
 
 	info, err := os.Stat(path)
 	if err != nil || !info.IsDir() {
@@ -336,14 +363,131 @@ func (h *AgentHandler) SetWorkspace(w http.ResponseWriter, r *http.Request) {
 	state.SetWorkspace(path)
 
 	snapshot := state.Snapshot(false)
-	writeJSON(w, http.StatusOK, SessionDetailResponse{
-		ID:           snapshot.ID,
-		SessionID:    snapshot.ID,
-		CreatedAt:    snapshot.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:    snapshot.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		MessageCount: snapshot.MessageCount,
-		Workspace:    snapshot.Workspace,
+	access := state.ClientAccess(clientID)
+	state.Broadcast(LiveEvent{Type: "workspace_changed", ClientID: clientID, WriterClientID: access.WriterClientID})
+	writeJSON(w, http.StatusOK, sessionDetailResponse(snapshot, nil, access))
+}
+
+func (h *AgentHandler) ConnectSession(w http.ResponseWriter, r *http.Request) {
+	state, ok := h.sessionFromPath(w, r)
+	if !ok {
+		return
+	}
+
+	var req SessionConnectRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+	access := state.ConnectClient(strings.TrimSpace(req.ClientID))
+	snapshot := state.Snapshot(true)
+	messages := visibleMessages(snapshot.Messages)
+	writeJSON(w, http.StatusOK, SessionConnectResponse{
+		ClientID:             access.ClientID,
+		Role:                 access.Role,
+		WriterClientID:       access.WriterClientID,
+		PendingWriterRequest: access.PendingWriterRequest,
+		Session:              sessionDetailResponse(snapshot, messages, access),
 	})
+	state.Broadcast(LiveEvent{Type: "client_connected", ClientID: access.ClientID, WriterClientID: access.WriterClientID})
+}
+
+func (h *AgentHandler) SessionEvents(w http.ResponseWriter, r *http.Request) {
+	state, ok := h.sessionFromPath(w, r)
+	if !ok {
+		return
+	}
+	clientID := strings.TrimSpace(r.URL.Query().Get("clientId"))
+	if clientID == "" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "clientId is required"})
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: "streaming not supported"})
+		return
+	}
+
+	ch, unsubscribe := state.Subscribe(clientID)
+	defer func() {
+		access, writerChanged := unsubscribe()
+		if writerChanged {
+			state.Broadcast(LiveEvent{Type: "writer_changed", ClientID: clientID, WriterClientID: access.WriterClientID})
+		}
+	}()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	access := state.ClientAccess(clientID)
+	writeLiveSSE(w, flusher, LiveEvent{
+		Type:                 "connected",
+		ClientID:             clientID,
+		WriterClientID:       access.WriterClientID,
+		PendingWriterRequest: access.PendingWriterRequest,
+	})
+
+	for {
+		select {
+		case event, ok := <-ch:
+			if !ok {
+				return
+			}
+			writeLiveSSE(w, flusher, event)
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+func (h *AgentHandler) RequestWriter(w http.ResponseWriter, r *http.Request) {
+	state, ok := h.sessionFromPath(w, r)
+	if !ok {
+		return
+	}
+	req, ok := decodeWriterRequest(w, r)
+	if !ok {
+		return
+	}
+	access, err := state.RequestWriter(strings.TrimSpace(req.ClientID))
+	if err != nil {
+		writeJSON(w, http.StatusConflict, ErrorResponse{Error: err.Error()})
+		return
+	}
+	if access.Role == session.RoleWriter {
+		state.Broadcast(LiveEvent{Type: "writer_changed", ClientID: access.ClientID, WriterClientID: access.WriterClientID})
+	} else {
+		state.Broadcast(LiveEvent{Type: "writer_request_created", ClientID: access.ClientID, WriterClientID: access.WriterClientID, PendingWriterRequest: access.PendingWriterRequest})
+	}
+	writeJSON(w, http.StatusOK, access)
+}
+
+func (h *AgentHandler) ApproveWriterRequest(w http.ResponseWriter, r *http.Request) {
+	h.resolveWriterRequest(w, r, true)
+}
+
+func (h *AgentHandler) RejectWriterRequest(w http.ResponseWriter, r *http.Request) {
+	h.resolveWriterRequest(w, r, false)
+}
+
+func (h *AgentHandler) ReleaseWriter(w http.ResponseWriter, r *http.Request) {
+	state, ok := h.sessionFromPath(w, r)
+	if !ok {
+		return
+	}
+	req, ok := decodeWriterRequest(w, r)
+	if !ok {
+		return
+	}
+	access, err := state.ReleaseWriter(strings.TrimSpace(req.ClientID))
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: err.Error()})
+		return
+	}
+	state.Broadcast(LiveEvent{Type: "writer_changed", ClientID: req.ClientID, WriterClientID: access.WriterClientID})
+	writeJSON(w, http.StatusOK, access)
 }
 
 func (h *AgentHandler) WorkspaceRoots(w http.ResponseWriter, r *http.Request) {
@@ -381,6 +525,108 @@ func (h *AgentHandler) BrowseWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- helpers ----
+
+func (h *AgentHandler) sessionFromPath(w http.ResponseWriter, r *http.Request) (*session.State, bool) {
+	sessionID := strings.TrimSpace(r.PathValue("sessionID"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "session ID is required"})
+		return nil, false
+	}
+	state, ok := h.sessions.Get(sessionID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "session not found"})
+		return nil, false
+	}
+	return state, true
+}
+
+func (h *AgentHandler) requireWriter(w http.ResponseWriter, state *session.State, clientID string) bool {
+	if clientID == "" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "clientId is required"})
+		return false
+	}
+	if !state.IsWriter(clientID) {
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "client is view-only; request writer control first"})
+		return false
+	}
+	return true
+}
+
+func decodeWriterRequest(w http.ResponseWriter, r *http.Request) (WriterRequestBody, bool) {
+	var req WriterRequestBody
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return WriterRequestBody{}, false
+	}
+	req.ClientID = strings.TrimSpace(req.ClientID)
+	if req.ClientID == "" {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "clientId is required"})
+		return WriterRequestBody{}, false
+	}
+	return req, true
+}
+
+func (h *AgentHandler) resolveWriterRequest(w http.ResponseWriter, r *http.Request, approved bool) {
+	state, ok := h.sessionFromPath(w, r)
+	if !ok {
+		return
+	}
+	var req WriterDecisionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+	clientID := strings.TrimSpace(req.ClientID)
+	requestID := strings.TrimSpace(req.RequestID)
+
+	var access session.ClientAccess
+	var err error
+	if approved {
+		access, err = state.ApproveWriterRequest(clientID, requestID)
+	} else {
+		access, err = state.RejectWriterRequest(clientID, requestID)
+	}
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: err.Error()})
+		return
+	}
+	state.Broadcast(LiveEvent{Type: "writer_request_resolved", ClientID: clientID, WriterClientID: access.WriterClientID, Approved: &approved})
+	if approved {
+		state.Broadcast(LiveEvent{Type: "writer_changed", ClientID: access.ClientID, WriterClientID: access.WriterClientID})
+	}
+	writeJSON(w, http.StatusOK, access)
+}
+
+func sessionDetailResponse(snapshot session.Snapshot, messages []ChatMessageResponse, access session.ClientAccess) SessionDetailResponse {
+	messageCount := snapshot.MessageCount
+	if messages != nil {
+		messageCount = len(messages)
+	}
+	return SessionDetailResponse{
+		ID:                   snapshot.ID,
+		SessionID:            snapshot.ID,
+		CreatedAt:            snapshot.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:            snapshot.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		MessageCount:         messageCount,
+		Messages:             messages,
+		Workspace:            snapshot.Workspace,
+		WriterClientID:       access.WriterClientID,
+		PendingWriterRequest: access.PendingWriterRequest,
+	}
+}
+
+func liveEventFromLoop(clientID string, event loop.SSEEvent) LiveEvent {
+	return LiveEvent{
+		Type:     string(event.Type),
+		ClientID: clientID,
+		Tool:     event.Tool,
+		Args:     event.Args,
+		Result:   event.Result,
+		Error:    event.Error,
+		Answer:   event.Answer,
+		Action:   event.Action,
+	}
+}
 
 func (h *AgentHandler) findOrCreateSession(w http.ResponseWriter, sessionID string) *session.State {
 	if sessionID == "" {
@@ -462,16 +708,28 @@ func workspaceEntriesToResponse(entries []workspacebrowse.Entry) []WorkspaceEntr
 // ---- SSE frame writer ----
 
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, event loop.SSEEvent) {
+	writeEventSSE(w, flusher, string(event.Type), event)
+}
+
+func writeLiveSSE(w http.ResponseWriter, flusher http.Flusher, event any) {
+	eventName := "message"
+	if live, ok := event.(LiveEvent); ok && live.Type != "" {
+		eventName = live.Type
+	}
+	writeEventSSE(w, flusher, eventName, event)
+}
+
+func writeEventSSE(w http.ResponseWriter, flusher http.Flusher, eventName string, event any) {
 	data, err := json.Marshal(event)
 	if err != nil {
-		slog.Warn("SSE marshal failed", "event_type", event.Type, "error", err)
+		slog.Warn("SSE marshal failed", "event_type", eventName, "error", err)
 		fmt.Fprintf(w, "event: error\ndata: {\"error\":\"marshal failed\"}\n\n")
 		flusher.Flush()
 		return
 	}
 
-	slog.Debug("SSE write", "event_type", event.Type, "bytes", len(data))
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
+	slog.Debug("SSE write", "event_type", eventName, "bytes", len(data))
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventName, data)
 	flusher.Flush()
 }
 

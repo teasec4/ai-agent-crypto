@@ -82,7 +82,12 @@ class _WorkspaceBrowserScreenState extends State<WorkspaceBrowserScreen> {
 
     try {
       final sessionId = await ApiService.createSession();
-      await ApiService.setWorkspace(sessionId, path);
+      final connected = await ApiService.connectSession(sessionId);
+      await ApiService.setWorkspace(
+        sessionId,
+        path,
+        clientId: connected.clientId,
+      );
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => DetailScreen(sessionId: sessionId)),
@@ -130,6 +135,14 @@ class _WorkspaceBrowserScreenState extends State<WorkspaceBrowserScreen> {
                         ],
                       ),
                     ),
+                  Text(
+                    'Server: ${ApiService.baseUri}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.outline,
+                    ),
+                  ),
                   const SizedBox(height: 12),
                   Row(
                     children: [
@@ -166,6 +179,8 @@ class _WorkspaceBrowserScreenState extends State<WorkspaceBrowserScreen> {
             Expanded(
               child: _loading
                   ? const Center(child: CircularProgressIndicator())
+                  : _error != null && listing == null
+                  ? _WorkspaceErrorState(error: _error!, onRetry: _loadInitial)
                   : _DirectoryList(
                       entries: listing?.entries ?? const [],
                       onOpen: _browse,
@@ -202,6 +217,44 @@ class _WorkspaceBrowserScreenState extends State<WorkspaceBrowserScreen> {
       default:
         return Icons.computer_outlined;
     }
+  }
+}
+
+class _WorkspaceErrorState extends StatelessWidget {
+  final String error;
+  final VoidCallback onRetry;
+
+  const _WorkspaceErrorState({required this.error, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.cloud_off_outlined,
+              size: 44,
+              color: theme.colorScheme.error,
+            ),
+            const SizedBox(height: 12),
+            Text('Could not load folders', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(error, textAlign: TextAlign.center),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

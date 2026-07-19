@@ -31,6 +31,8 @@ class SessionDetailResponse {
   final DateTime? updatedAt;
   final int messageCount;
   final String? workspace;
+  final String? writerClientId;
+  final WriterRequest? pendingWriterRequest;
   final List<SessionMessage> messages;
 
   SessionDetailResponse({
@@ -40,6 +42,8 @@ class SessionDetailResponse {
     this.updatedAt,
     required this.messageCount,
     this.workspace,
+    this.writerClientId,
+    this.pendingWriterRequest,
     required this.messages,
   });
 
@@ -51,9 +55,100 @@ class SessionDetailResponse {
       updatedAt: DateTime.tryParse(json['updatedAt'] as String? ?? ''),
       messageCount: (json['messageCount'] as num?)?.toInt() ?? 0,
       workspace: json['workspace'] as String?,
+      writerClientId: json['writerClientId'] as String?,
+      pendingWriterRequest: json['pendingWriterRequest'] is Map<String, dynamic>
+          ? WriterRequest.fromJson(
+              json['pendingWriterRequest'] as Map<String, dynamic>,
+            )
+          : null,
       messages: (json['messages'] as List? ?? const [])
           .map((item) => SessionMessage.fromJson(item as Map<String, dynamic>))
           .toList(),
+    );
+  }
+}
+
+class SessionConnectResponse {
+  final String clientId;
+  final String role;
+  final String? writerClientId;
+  final WriterRequest? pendingWriterRequest;
+  final SessionDetailResponse session;
+
+  SessionConnectResponse({
+    required this.clientId,
+    required this.role,
+    this.writerClientId,
+    this.pendingWriterRequest,
+    required this.session,
+  });
+
+  factory SessionConnectResponse.fromJson(Map<String, dynamic> json) {
+    return SessionConnectResponse(
+      clientId: json['clientId'] as String? ?? '',
+      role: json['role'] as String? ?? 'viewer',
+      writerClientId: json['writerClientId'] as String?,
+      pendingWriterRequest: json['pendingWriterRequest'] is Map<String, dynamic>
+          ? WriterRequest.fromJson(
+              json['pendingWriterRequest'] as Map<String, dynamic>,
+            )
+          : null,
+      session: SessionDetailResponse.fromJson(
+        json['session'] as Map<String, dynamic>,
+      ),
+    );
+  }
+}
+
+class ClientAccessResponse {
+  final String clientId;
+  final String role;
+  final String? writerClientId;
+  final WriterRequest? pendingWriterRequest;
+
+  ClientAccessResponse({
+    required this.clientId,
+    required this.role,
+    this.writerClientId,
+    this.pendingWriterRequest,
+  });
+
+  factory ClientAccessResponse.fromJson(Map<String, dynamic> json) {
+    return ClientAccessResponse(
+      clientId: json['clientId'] as String? ?? '',
+      role: json['role'] as String? ?? 'viewer',
+      writerClientId: json['writerClientId'] as String?,
+      pendingWriterRequest: json['pendingWriterRequest'] is Map<String, dynamic>
+          ? WriterRequest.fromJson(
+              json['pendingWriterRequest'] as Map<String, dynamic>,
+            )
+          : null,
+    );
+  }
+}
+
+class WriterRequest {
+  final String id;
+  final String fromClientId;
+  final String? toClientId;
+  final DateTime? createdAt;
+  final DateTime? expiresAt;
+
+  WriterRequest({
+    required this.id,
+    required this.fromClientId,
+    this.toClientId,
+    this.createdAt,
+    this.expiresAt,
+  });
+
+  factory WriterRequest.fromJson(Map<String, dynamic> json) {
+    return WriterRequest(
+      id: json['id'] as String? ?? '',
+      fromClientId: json['fromClientId'] as String? ?? '',
+      toClientId: json['toClientId'] as String?,
+      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? ''),
+      expiresAt: DateTime.tryParse(json['expiresAt'] as String? ?? ''),
     );
   }
 }

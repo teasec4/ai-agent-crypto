@@ -62,6 +62,82 @@ func (t *CreateDirectoryTool) Run(ctx context.Context, workspace string, params 
 	return fmt.Sprintf("Created directory %s", relPath), nil
 }
 
+// DeletePathTool deletes a file or directory inside the workspace after approval.
+type DeletePathTool struct{}
+
+func NewDeletePathTool() *DeletePathTool { return &DeletePathTool{} }
+
+func (t *DeletePathTool) Name() string { return "delete_path" }
+func (t *DeletePathTool) Description() string {
+	return "Delete a file or directory from the workspace."
+}
+func (t *DeletePathTool) Schema() ToolSchema {
+	return ToolSchema{
+		Type: "object",
+		Properties: map[string]Parameter{
+			"path": {Type: "string", Description: "Relative file or directory path to delete (required)"},
+		},
+		Required: []string{"path"},
+	}
+}
+
+func (t *DeletePathTool) RequiresApproval(params map[string]interface{}) bool { return true }
+func (t *DeletePathTool) Risk(params map[string]interface{}) approval.RiskLevel {
+	return approval.RiskWrite
+}
+func (t *DeletePathTool) Summary(params map[string]interface{}) string {
+	return fmt.Sprintf("Delete %s", getStringParam(params, "path", ""))
+}
+func (t *DeletePathTool) Preview(params map[string]interface{}) (string, error) {
+	path := getStringParam(params, "path", "")
+	if path == "" {
+		return "", fmt.Errorf("missing required parameter 'path'")
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	if clean == "." {
+		return "", fmt.Errorf("deleting the workspace root is not allowed")
+	}
+	if filepath.IsAbs(path) || isPathTraversal(path) || isBlockedWorkspacePath(path) {
+		return "", fmt.Errorf("invalid or blocked path %q", path)
+	}
+	return fmt.Sprintf("Will permanently delete:\n%s", path), nil
+}
+func (t *DeletePathTool) Run(ctx context.Context, workspace string, params map[string]interface{}) (string, error) {
+	path := getStringParam(params, "path", "")
+	if path == "" {
+		return "", fmt.Errorf("missing required parameter 'path'")
+	}
+	root := getRoot(workspace)
+	fullPath, relPath, err := resolvePath(root, path)
+	if err != nil {
+		return "", err
+	}
+	if relPath == "." {
+		return "", fmt.Errorf("deleting the workspace root is not allowed")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("path %q does not exist", relPath)
+		}
+		return "", fmt.Errorf("failed to stat %q: %w", relPath, err)
+	}
+	if info.IsDir() {
+		if err := os.RemoveAll(fullPath); err != nil {
+			return "", fmt.Errorf("failed to delete directory %q: %w", relPath, err)
+		}
+		return fmt.Sprintf("Deleted directory %s", relPath), nil
+	}
+	if err := os.Remove(fullPath); err != nil {
+		return "", fmt.Errorf("failed to delete file %q: %w", relPath, err)
+	}
+	return fmt.Sprintf("Deleted file %s", relPath), nil
+}
+
 // WriteFileTool writes a text file inside the workspace after approval.
 type WriteFileTool struct{}
 
@@ -69,7 +145,7 @@ func NewWriteFileTool() *WriteFileTool { return &WriteFileTool{} }
 
 func (t *WriteFileTool) Name() string { return "write_file" }
 func (t *WriteFileTool) Description() string {
-	return "Create or overwrite a text file in the workspace."
+	return "Create a new text file, write to an empty file, or overwrite a whole text file in the workspace."
 }
 func (t *WriteFileTool) Schema() ToolSchema {
 	return ToolSchema{
@@ -77,7 +153,7 @@ func (t *WriteFileTool) Schema() ToolSchema {
 		Properties: map[string]Parameter{
 			"path":      {Type: "string", Description: "Relative file path (required)"},
 			"content":   {Type: "string", Description: "File content (required)"},
-			"overwrite": {Type: "boolean", Description: "Overwrite existing file (default: false)"},
+			"overwrite": {Type: "boolean", Description: "Overwrite existing file or fill an empty existing file (default: false)"},
 		},
 		Required: []string{"path", "content"},
 	}
@@ -151,14 +227,14 @@ func NewEditFileTool() *EditFileTool { return &EditFileTool{} }
 
 func (t *EditFileTool) Name() string { return "edit_file" }
 func (t *EditFileTool) Description() string {
-	return "Edit an existing text file by replacing text."
+	return "Edit an existing non-empty text file by replacing exact known text. Use write_file for empty files or full replacement."
 }
 func (t *EditFileTool) Schema() ToolSchema {
 	return ToolSchema{
 		Type: "object",
 		Properties: map[string]Parameter{
 			"path":        {Type: "string", Description: "Relative file path (required)"},
-			"old_text":    {Type: "string", Description: "Text to be replaced (required)"},
+			"old_text":    {Type: "string", Description: "Exact existing text to be replaced (required; read the file first if unknown)"},
 			"new_text":    {Type: "string", Description: "Replacement text (required)"},
 			"replace_all": {Type: "boolean", Description: "Replace all occurrences (default: false)"},
 		},

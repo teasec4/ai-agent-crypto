@@ -70,6 +70,7 @@ class _DetailScreenBodyState extends State<_DetailScreenBody> {
           Expanded(
             child: _ChatBody(chat: chat, scrollController: _scrollController),
           ),
+          if (chat.loaded && chat.loadError == null) _ControlBar(chat: chat),
           if (pendingApproval != null)
             ApprovalBar(
               action: pendingApproval,
@@ -89,6 +90,70 @@ class _DetailScreenBodyState extends State<_DetailScreenBody> {
             enabled: chat.canSend,
             onSubmitted: _send,
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ControlBar extends StatelessWidget {
+  final ChatController chat;
+
+  const _ControlBar({required this.chat});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final request = chat.pendingWriterRequest;
+
+    if (chat.isWriter && request != null) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+        child: Row(
+          children: [
+            const Icon(Icons.sync_alt, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Control requested',
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+            TextButton(
+              onPressed: () => chat.resolveControlRequest(false),
+              child: const Text('Reject'),
+            ),
+            FilledButton(
+              onPressed: () => chat.resolveControlRequest(true),
+              child: const Text('Approve'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+      child: Row(
+        children: [
+          Icon(
+            chat.isWriter ? Icons.edit : Icons.visibility_outlined,
+            size: 18,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              chat.isWriter ? 'Writer' : 'View only',
+              style: theme.textTheme.bodyMedium,
+            ),
+          ),
+          if (!chat.isWriter)
+            OutlinedButton(
+              onPressed: chat.canRequestControl && !chat.requestingControl
+                  ? chat.requestControl
+                  : null,
+              child: Text(request == null ? 'Request control' : 'Requested'),
+            ),
         ],
       ),
     );

@@ -78,7 +78,12 @@ func (p *LLMPlanner) Plan(ctx context.Context, history []llm.Message, workspace 
 			p.logger.Error("planner: LLM called unknown tool",
 				"tool", tc.Function.Name,
 			)
-			return PlanResult{}, fmt.Errorf("llm called unknown tool %q", tc.Function.Name)
+			return PlanResult{
+				Action: ActionUnknown,
+				Parameters: map[string]interface{}{
+					"reason": fmt.Sprintf("tool %q is not available", tc.Function.Name),
+				},
+			}, nil
 		}
 
 		p.logger.Info("planner: tool call decided",
@@ -129,9 +134,11 @@ func (p *LLMPlanner) buildMessages(history []llm.Message, projectMemory string) 
 5. If a task is impossible with the available tools, say so clearly.
 6. For cryptocurrency price/rank/market questions, always call get_crypto_price first. Do not refuse because a ticker looks unfamiliar or rare; try the tool with the user's symbol/name/id and let the tool resolve it. Only say you cannot find it after the tool fails.
 7. Use the project memory as durable project context. If you learn a stable fact or user preference worth remembering, call propose_memory_update instead of silently changing memory.
+8. For files: use write_file for new files, empty files, or full file replacement. Use edit_file only when you know the exact old_text that already exists in the file. If you need to edit an existing non-empty file and do not know old_text, read_file first.
 
 You have access to the following tool categories:
 - File operations: read, write, edit, search, list directories
+- Deletion: delete files or directories with approval
 - Git operations: status, diff, log, branch info
 - Command execution: go, git, ls, pwd
 - Project memory: read durable notes and propose memory updates

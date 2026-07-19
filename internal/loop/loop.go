@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"ai-agent/internal/id"
@@ -63,6 +66,8 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 				"error", err,
 			)
 			answer := fmt.Sprintf("Выполнение остановлено: %v", err)
+			req.Memory.AddAssistant(answer)
+			compactMemory(req)
 			emit(req, SSEEvent{Type: EventDone, Answer: answer})
 			return LoopResult{
 				Answer:     answer,
@@ -78,6 +83,8 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 				"limit", maxIter,
 			)
 			answer := fmt.Sprintf("Достигнут лимит итераций (%d). Пожалуйста, уточните запрос.", maxIter)
+			req.Memory.AddAssistant(answer)
+			compactMemory(req)
 			emit(req, SSEEvent{Type: EventDone, Answer: answer})
 			return LoopResult{
 				Answer:     answer,
@@ -93,6 +100,8 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 				"elapsed_ms", time.Since(startTime).Milliseconds(),
 			)
 			answer := fmt.Sprintf("Превышено время выполнения (%.0f сек). Пожалуйста, упростите запрос.", time.Since(startTime).Seconds())
+			req.Memory.AddAssistant(answer)
+			compactMemory(req)
 			emit(req, SSEEvent{Type: EventDone, Answer: answer})
 			return LoopResult{
 				Answer:     answer,
@@ -126,6 +135,8 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 				ContextSize: req.Memory.Len(),
 			})
 			answer := fmt.Sprintf("Ошибка при построении плана: %v", err)
+			req.Memory.AddAssistant(answer)
+			compactMemory(req)
 			emit(req, SSEEvent{Type: EventDone, Answer: answer})
 			return LoopResult{
 				Answer:     answer,
@@ -189,6 +200,8 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 				"tool_call_id", planResult.ToolCallID,
 			)
 
+			planResult = repairFileWritePlan(req, planResult, logger)
+
 			// Check if the tool needs approval
 			needsApproval := !req.AutoApprove && req.Executor.RequiresApproval(planResult)
 
@@ -200,14 +213,27 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 						"action", planResult.Action,
 						"error", err.Error(),
 					)
-					answer := fmt.Sprintf("Не удалось подготовить подтверждение: %v", err)
-					emit(req, SSEEvent{Type: EventDone, Answer: answer})
-					return LoopResult{
-						Answer:     answer,
-						Iterations: len(trace),
-						Trace:      trace,
-						StoppedBy:  StoppedByError,
+					toolCallID := planResult.ToolCallID
+					if toolCallID == "" {
+						toolCallID = id.New()
 					}
+					argsJSON, _ := json.Marshal(planResult.Parameters)
+					req.Memory.AddAssistantToolCall(toolCallID, planResult.Action, string(argsJSON))
+					req.Memory.AddToolResult(toolCallID, fmt.Sprintf("Tool %s parameters are invalid: %v. Choose valid parameters or a different tool.", planResult.Action, err))
+					emit(req, SSEEvent{
+						Type:  EventToolError,
+						Tool:  planResult.Action,
+						Args:  planResult.Parameters,
+						Error: err.Error(),
+					})
+					compactMemory(req)
+					trace = append(trace, LoopIteration{
+						Index:       iterationIndex,
+						Outcome:     OutcomeToolCalls,
+						ToolEvents:  []ToolEvent{{Tool: planResult.Action, Args: planResult.Parameters, Error: err.Error()}},
+						ContextSize: req.Memory.Len(),
+					})
+					continue
 				}
 
 				// Legacy: no callback → return PendingAction
@@ -357,6 +383,114 @@ func compactMemory(req LoopRequest) {
 	if req.CompactMemory != nil {
 		req.CompactMemory(req.Context)
 	}
+}
+
+func repairFileWritePlan(req LoopRequest, planResult planner.PlanResult, logger *slog.Logger) planner.PlanResult {
+	if planResult.Action != "edit_file" {
+		return planResult
+	}
+	path, _ := planResult.Parameters["path"].(string)
+	newText, hasNewText := planResult.Parameters["new_text"].(string)
+	oldText, hasOldText := planResult.Parameters["old_text"].(string)
+	if path == "" || !hasNewText || (hasOldText && oldText != "") {
+		return planResult
+	}
+
+	empty, exists, err := workspaceFileIsEmpty(req.Workspace, path)
+	if err != nil {
+		logger.Warn("could not inspect file for edit_file repair",
+			"path", path,
+			"error", err.Error(),
+		)
+		return planResult
+	}
+	if exists && !empty {
+		return planResult
+	}
+
+	params := map[string]interface{}{
+		"path":      path,
+		"content":   newText,
+		"overwrite": exists,
+	}
+	logger.Info("repaired edit_file without old_text to write_file",
+		"path", path,
+		"file_exists", exists,
+	)
+	return planner.PlanResult{
+		Action:     "write_file",
+		Parameters: params,
+		ToolCallID: planResult.ToolCallID,
+	}
+}
+
+func workspaceFileIsEmpty(workspace, rawPath string) (empty bool, exists bool, err error) {
+	fullPath, err := resolveWorkspacePath(workspace, rawPath)
+	if err != nil {
+		return false, false, err
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, false, nil
+		}
+		return false, false, err
+	}
+	if info.IsDir() {
+		return false, true, fmt.Errorf("%q is a directory", rawPath)
+	}
+	return info.Size() == 0, true, nil
+}
+
+func resolveWorkspacePath(workspace, rawPath string) (string, error) {
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		return "", fmt.Errorf("missing path")
+	}
+	if filepath.IsAbs(path) {
+		return "", fmt.Errorf("absolute paths are not allowed")
+	}
+	clean := filepath.Clean(path)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes workspace")
+	}
+	if isBlockedWorkspacePath(clean) {
+		return "", fmt.Errorf("access to %q is blocked", clean)
+	}
+
+	root := workspace
+	if root == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		root = cwd
+	}
+	root = filepath.Clean(root)
+	if resolvedRoot, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolvedRoot
+	}
+
+	fullPath := filepath.Clean(filepath.Join(root, clean))
+	if fullPath != root && !strings.HasPrefix(fullPath, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes workspace")
+	}
+	if realPath, err := filepath.EvalSymlinks(fullPath); err == nil {
+		if realPath != root && !strings.HasPrefix(realPath, root+string(filepath.Separator)) {
+			return "", fmt.Errorf("symlink %q points outside the workspace", clean)
+		}
+	}
+	return fullPath, nil
+}
+
+func isBlockedWorkspacePath(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		switch part {
+		case ".env", ".env.local", ".git":
+			return true
+		}
+	}
+	return false
 }
 
 func unsupportedActionReply(reason string) string {

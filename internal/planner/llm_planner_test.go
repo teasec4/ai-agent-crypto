@@ -15,10 +15,14 @@ import (
 
 type captureLLMClient struct {
 	messages []llm.Message
+	response *llm.ChatResponse
 }
 
 func (c *captureLLMClient) Chat(ctx context.Context, messages []llm.Message, tools []llm.ToolDefinition) (*llm.ChatResponse, error) {
 	c.messages = append([]llm.Message(nil), messages...)
+	if c.response != nil {
+		return c.response, nil
+	}
 	return &llm.ChatResponse{Content: "ok", FinishReason: "stop"}, nil
 }
 
@@ -48,5 +52,34 @@ func TestPlanIncludesProjectMemory(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected project memory system message, got %#v", client.messages)
+	}
+}
+
+func TestPlanUnknownToolReturnsActionUnknown(t *testing.T) {
+	client := &captureLLMClient{
+		response: &llm.ChatResponse{
+			FinishReason: "tool_calls",
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.FunctionCall{
+					Name:      "delete_directory",
+					Arguments: `{"path":"test-folder"}`,
+				},
+			}},
+		},
+	}
+	planner := NewLLMPlanner(client, registry.New(tools.NewReadFileTool()))
+
+	result, err := planner.Plan(context.Background(), []llm.Message{{Role: "user", Content: "удали папку test-folder"}}, t.TempDir())
+	if err != nil {
+		t.Fatalf("Plan returned error: %v", err)
+	}
+	if result.Action != ActionUnknown {
+		t.Fatalf("expected ActionUnknown, got %q", result.Action)
+	}
+	reason, _ := result.Parameters["reason"].(string)
+	if !strings.Contains(reason, "delete_directory") {
+		t.Fatalf("expected reason to mention unknown tool, got %q", reason)
 	}
 }
