@@ -1,7 +1,7 @@
 package session
 
 import (
-	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -193,7 +193,7 @@ func (store *Store) persist() {
 	store.persistMu.Lock()
 	defer store.persistMu.Unlock()
 	if err := store.storage.Save(store.persistedStates()); err != nil {
-		fmt.Printf("failed to persist sessions: %v\n", err)
+		slog.Error("failed to persist sessions", "error", err)
 	}
 }
 
@@ -340,7 +340,7 @@ func (store *Store) StartCleanup(interval time.Duration, ttl time.Duration) (sto
 			select {
 			case <-ticker.C:
 				if removed := store.CleanupExpired(ttl); removed > 0 {
-					fmt.Printf("session cleanup: removed %d expired sessions\n", removed)
+					slog.Info("session cleanup removed expired sessions", "removed", removed)
 				}
 			case <-done:
 				ticker.Stop()

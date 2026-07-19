@@ -94,24 +94,15 @@ func (h *WorkMemory) AddToolResult(toolCallID, content string) {
 	})
 }
 
-// AddTool adds a tool observation as a user message (legacy format).
-// Kept for backward compatibility.
-func (h *WorkMemory) AddTool(content string) {
-	if content == "" {
-		return
-	}
-	h.Messages = append(h.Messages, llm.Message{Role: RoleUser, Content: ToolObservationPrefix + content})
-}
-
 // FormatToolResult builds a tool observation message for the conversation history.
-func FormatToolResult(action string, result string, err error, prefix string) string {
+func FormatToolResult(action string, result string, err error) string {
 	if err != nil {
 		if result != "" {
-			return fmt.Sprintf("%s%s output:\n%s\nError: %v", prefix, action, result, err)
+			return fmt.Sprintf("%s output:\n%s\nError: %v", action, result, err)
 		}
-		return fmt.Sprintf("%s%s failed: %v", prefix, action, err)
+		return fmt.Sprintf("%s failed: %v", action, err)
 	}
-	return fmt.Sprintf("%s%s result: %s", prefix, action, result)
+	return fmt.Sprintf("%s result: %s", action, result)
 }
 
 // CompactIfNeeded checks if the history exceeds the threshold and compacts it.

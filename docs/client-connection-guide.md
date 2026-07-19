@@ -20,20 +20,32 @@ For iOS simulator and macOS client use:
 http://127.0.0.1:8080
 ```
 
+For a physical iOS or Android phone on the same Wi-Fi as the backend computer, use the computer's LAN IP in the app's Server field:
+
+```text
+http://192.168.1.20:8080
+```
+
+`localhost` on a phone means the phone itself, not the computer running `go run ./cmd/api`.
+
 ## Recommended Client Flow
 
-Use this flow for the app UI:
+Use this project-first flow for the app UI:
 
 1. Check server health with `GET /health`.
-2. Create a session with `POST /sessions`.
-3. Optionally set workspace with `POST /sessions/{sessionId}/workspace`.
-4. Send messages through `POST /sessions/{sessionId}/stream`.
-5. Render SSE events as they arrive.
-6. If `approval_required` arrives, show approval UI.
-7. Call `/approve` or `/reject`.
-8. When `done` arrives, show the final assistant answer.
+2. Show New Project plus the existing projects list on the same screen.
+3. For New Project, browse folders on the backend computer with `/workspace/roots` and `/workspace/browse`.
+4. Create the hidden backend session with `POST /sessions`.
+5. Bind it to the chosen folder with `POST /sessions/{sessionId}/workspace`.
+6. Send messages through `POST /sessions/{sessionId}/stream`.
+7. Render SSE events as they arrive.
+8. If `approval_required` arrives, show approval UI.
+9. Call `/approve` or `/reject`.
+10. When `done` arrives, show the final assistant answer.
 
 `/ask` is still available, but `/stream` is better for UI because it shows thinking/tool progress and supports interactive approvals.
+
+The UI should call these records "projects". `sessionId` is an internal transport detail.
 
 ## Health
 
@@ -100,6 +112,65 @@ Response:
 ```
 
 If workspace is not set, tools use the server process working directory.
+
+## Browse Backend Folders
+
+Mobile clients cannot use the phone's native file picker to select folders on the computer running the Go API. Use the backend folder browser instead.
+
+Roots:
+
+```http
+GET /workspace/roots
+```
+
+Response:
+
+```json
+{
+  "roots": [
+    {
+      "path": "/Users/me/go/ai-agent",
+      "name": "ai-agent",
+      "kind": "cwd"
+    },
+    {
+      "path": "/Users/me",
+      "name": "me",
+      "kind": "home"
+    }
+  ]
+}
+```
+
+Browse:
+
+```http
+GET /workspace/browse?path=/Users/me
+```
+
+Response:
+
+```json
+{
+  "path": "/Users/me",
+  "roots": [
+    {
+      "path": "/Users/me",
+      "name": "me",
+      "kind": "home"
+    }
+  ],
+  "entries": [
+    {
+      "name": "project-a",
+      "path": "/Users/me/project-a",
+      "isDir": true
+    }
+  ]
+}
+```
+
+The client should let the user navigate directories and then pass the selected `path` to `/sessions/{sessionId}/workspace`. Browsing is limited to the roots returned by the backend, so clients should hide the Up action when `parentPath` is absent.
 
 ## Simple Non-Streaming Message
 

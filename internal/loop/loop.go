@@ -8,7 +8,6 @@ import (
 	"runtime/debug"
 	"time"
 
-	"ai-agent/internal/guardrails"
 	"ai-agent/internal/id"
 	"ai-agent/internal/memory"
 	"ai-agent/internal/planner"
@@ -108,28 +107,6 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 			"messages", req.Memory.Len(),
 		)
 
-		// ---- Guardrail check ----
-		if req.Guardrail != nil {
-			checkErr := req.Guardrail(guardrails.GuardrailInput{
-				Iteration: iterationIndex,
-				Messages:  req.Memory.Messages,
-			})
-			if checkErr != nil {
-				logger.Warn("guardrail stopped loop",
-					"iteration", iterationIndex,
-					"error", checkErr.Error(),
-					"messages", req.Memory.Len(),
-				)
-				emit(req, SSEEvent{Type: EventDone, Answer: checkErr.Error()})
-				return LoopResult{
-					Answer:     checkErr.Error(),
-					Iterations: len(trace),
-					Trace:      trace,
-					StoppedBy:  StoppedByGuardrail,
-				}
-			}
-		}
-
 		emit(req, SSEEvent{Type: EventThinking})
 
 		// ---- Plan step ----
@@ -168,7 +145,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 				"total_ms", time.Since(startTime).Milliseconds(),
 			)
 			req.Memory.AddAssistant(planResult.Reply)
-			req.Memory.CompactIfNeeded(req.Context, req.LLMClient)
+			compactMemory(req)
 			trace = append(trace, LoopIteration{
 				Index:       iterationIndex,
 				Outcome:     OutcomeAnswer,
@@ -190,7 +167,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 			)
 			answer := unsupportedActionReply(reason)
 			req.Memory.AddAssistant(answer)
-			req.Memory.CompactIfNeeded(req.Context, req.LLMClient)
+			compactMemory(req)
 			trace = append(trace, LoopIteration{
 				Index:       iterationIndex,
 				Outcome:     OutcomeAnswer,
@@ -284,7 +261,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 					req.Memory.AddAssistantToolCall(toolCallID, planResult.Action, string(argsJSON))
 					req.Memory.AddToolResult(toolCallID, fmt.Sprintf("Error: action rejected by user"))
 					req.Memory.AddAssistant(fmt.Sprintf("Действие %s отклонено.", planResult.Action))
-					req.Memory.CompactIfNeeded(req.Context, req.LLMClient)
+					compactMemory(req)
 					trace = append(trace, LoopIteration{
 						Index:       iterationIndex,
 						Outcome:     OutcomeToolCalls,
@@ -327,7 +304,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 			}
 			if err != nil {
 				event.Error = err.Error()
-				req.Memory.AddToolResult(toolCallID, memory.FormatToolResult(planResult.Action, result, err, ""))
+				req.Memory.AddToolResult(toolCallID, memory.FormatToolResult(planResult.Action, result, err))
 				logger.Warn("tool execution failed",
 					"iteration", iterationIndex,
 					"tool", planResult.Action,
@@ -359,7 +336,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 					Result: result,
 				})
 			}
-			req.Memory.CompactIfNeeded(req.Context, req.LLMClient)
+			compactMemory(req)
 			trace = append(trace, LoopIteration{
 				Index:       iterationIndex,
 				Outcome:     OutcomeToolCalls,
@@ -373,6 +350,12 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 func emit(req LoopRequest, event SSEEvent) {
 	if req.OnEvent != nil {
 		req.OnEvent(event)
+	}
+}
+
+func compactMemory(req LoopRequest) {
+	if req.CompactMemory != nil {
+		req.CompactMemory(req.Context)
 	}
 }
 

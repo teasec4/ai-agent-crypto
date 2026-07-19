@@ -35,7 +35,7 @@ Entry Points:  CLI (cmd/cli)  │  API Server (cmd/api)
                     ├─────────────────────┤
                     │ Planner (LLM)       │ ← native tool_calls
                     │ Executor (10 tools) │ ← stateless, sandboxed
-                    │ Loop (guardrails,   │
+                    │ Loop (limits,       │
                     │   approval, SSE)    │
                     └──────────┬──────────┘
                                │

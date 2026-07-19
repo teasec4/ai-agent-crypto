@@ -48,12 +48,11 @@ func run() error {
 
 		slog.Info("user input", "input", input)
 
-		result := h.RunWithMemoryStreaming(
-			context.Background(),
-			input,
-			mem,
-			"",
-			func(event loop.SSEEvent) {
+		result := h.Run(context.Background(), harness.RunRequest{
+			Task:            input,
+			Memory:          mem,
+			RequireApproval: true,
+			OnEvent: func(event loop.SSEEvent) {
 				switch event.Type {
 				case loop.EventThinking:
 					fmt.Print(".")
@@ -65,7 +64,7 @@ func run() error {
 					fmt.Printf(" ✗ (%s)", event.Error)
 				}
 			},
-			func(ctx context.Context, action *approval.PendingAction) bool {
+			OnApproval: func(ctx context.Context, action *approval.PendingAction) bool {
 				printApprovalCard(action)
 				fmt.Print("  > ")
 				if !scanner.Scan() {
@@ -74,7 +73,7 @@ func run() error {
 				answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
 				return answer == "y" || answer == "yes" || answer == "да" || answer == "/approve"
 			},
-		)
+		})
 
 		fmt.Println()
 		fmt.Printf("Agent: %s\n\n", result.LoopResult.Answer)

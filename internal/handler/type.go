@@ -38,6 +38,25 @@ type SessionDetailResponse struct {
 	Workspace    string                `json:"workspace,omitempty"`
 }
 
+type WorkspaceRootResponse struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+type WorkspaceEntryResponse struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	IsDir bool   `json:"isDir"`
+}
+
+type WorkspaceBrowseResponse struct {
+	Path       string                   `json:"path"`
+	ParentPath string                   `json:"parentPath,omitempty"`
+	Roots      []WorkspaceRootResponse  `json:"roots,omitempty"`
+	Entries    []WorkspaceEntryResponse `json:"entries"`
+}
+
 type ChatMessageResponse struct {
 	Role       string         `json:"role"`
 	Content    string         `json:"content"`

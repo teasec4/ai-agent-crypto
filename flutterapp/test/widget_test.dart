@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flutterapp/Session/presentation/view/widgets/approval_bar.dart';
 import 'package:flutterapp/Session/presentation/view/detail_screen.dart';
+import 'package:flutterapp/Session/presentation/view/widgets/approval_bar.dart';
 import 'package:flutterapp/Session/service/api_service.dart';
 import 'package:flutterapp/Session/service/domain/sse_event.dart';
 import 'package:flutterapp/main.dart';
@@ -15,7 +15,7 @@ void main() {
     );
   });
 
-  testWidgets('reuses an existing session before entering chat', (
+  testWidgets('shows the project hub actions and recent projects', (
     tester,
   ) async {
     ApiService.configureForTesting(
@@ -24,7 +24,7 @@ void main() {
         expect(request.method, 'GET');
         expect(request.url.path, '/sessions');
         return http.Response(
-          '[{"id":"session-1234567890","messageCount":2}]',
+          '[{"id":"session-1234567890","workspace":"/Users/me/alpha","messageCount":2}]',
           200,
         );
       }),
@@ -33,20 +33,14 @@ void main() {
     await tester.pumpWidget(const MyApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('Ready to Chat'), findsOneWidget);
-    expect(find.text('Open Chat'), findsOneWidget);
-    expect(find.text('Start Fresh Session'), findsOneWidget);
-    expect(find.text('Project Folder (Optional)'), findsOneWidget);
-    expect(find.text('Connection Details'), findsOneWidget);
-
-    await tester.tap(find.text('Connection Details'));
-    await tester.pumpAndSettle();
-
-    expect(find.textContaining('session-123456'), findsOneWidget);
-    expect(find.textContaining('http://agent.test'), findsOneWidget);
+    expect(find.text('Choose a project'), findsOneWidget);
+    expect(find.text('New Project'), findsOneWidget);
+    expect(find.text('Recent projects'), findsOneWidget);
+    expect(find.text('alpha'), findsOneWidget);
+    expect(find.text('/Users/me/alpha'), findsOneWidget);
   });
 
-  testWidgets('shows a backend unavailable state', (tester) async {
+  testWidgets('shows a backend unavailable state on the hub', (tester) async {
     ApiService.configureForTesting(
       baseUriOverride: Uri.parse('http://agent.test'),
       client: MockClient((request) async {
@@ -64,80 +58,77 @@ void main() {
     expect(find.text('Retry'), findsOneWidget);
   });
 
-  testWidgets('explains empty workspace instead of silently doing nothing', (
+  testWidgets('new project opens the backend folder browser', (tester) async {
+    ApiService.configureForTesting(
+      baseUriOverride: Uri.parse('http://agent.test'),
+      client: MockClient((request) async {
+        if (request.url.path == '/sessions') {
+          return http.Response('[]', 200);
+        }
+        if (request.url.path == '/workspace/roots') {
+          return http.Response(
+            '{"roots":[{"path":"/Users/me","name":"me","kind":"home"}]}',
+            200,
+          );
+        }
+        if (request.url.path == '/workspace/browse') {
+          return http.Response(
+            '{"path":"/Users/me","roots":[{"path":"/Users/me","name":"me","kind":"home"}],"entries":[{"name":"alpha","path":"/Users/me/alpha","isDir":true}]}',
+            200,
+          );
+        }
+        return http.Response('{"error":"unexpected"}', 404);
+      }),
+    );
+
+    await tester.pumpWidget(const MyApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('New Project'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Create Project Here'), findsOneWidget);
+    expect(find.text('alpha'), findsOneWidget);
+    expect(find.text('/Users/me'), findsOneWidget);
+  });
+
+  testWidgets('loads project history and sends streamed chat text', (
     tester,
   ) async {
     ApiService.configureForTesting(
       baseUriOverride: Uri.parse('http://agent.test'),
       client: MockClient((request) async {
-        expect(request.method, 'GET');
-        return http.Response(
-          '[{"id":"session-1234567890","messageCount":0}]',
-          200,
-        );
-      }),
-    );
-
-    await tester.pumpWidget(const MyApp());
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Project Folder (Optional)'));
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Apply Workspace'));
-    await tester.pumpAndSettle();
-
-    expect(find.textContaining('Workspace is optional'), findsOneWidget);
-  });
-
-  testWidgets('start fresh session opens chat immediately', (tester) async {
-    var requestCount = 0;
-
-    ApiService.configureForTesting(
-      baseUriOverride: Uri.parse('http://agent.test'),
-      client: MockClient((request) async {
-        requestCount++;
-        if (requestCount == 1) {
-          expect(request.method, 'GET');
-          expect(request.url.path, '/sessions');
-          return http.Response('[]', 200);
+        if (request.method == 'GET' &&
+            request.url.path == '/sessions/session-1') {
+          return http.Response(
+            '{"id":"session-1","sessionId":"session-1","messageCount":2,"workspace":"/Users/me/alpha","messages":[{"role":"user","content":"previous question"},{"role":"assistant","content":"previous answer"}]}',
+            200,
+          );
         }
-        expect(request.method, 'POST');
-        expect(request.url.path, '/sessions');
-        return http.Response('{"sessionId":"fresh-session"}', 201);
-      }),
-    );
-
-    await tester.pumpWidget(const MyApp());
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Start Fresh Session'));
-    await tester.pumpAndSettle();
-
-    expect(find.byType(DetailScreen), findsOneWidget);
-  });
-
-  testWidgets('sends chat text and renders streamed answer', (tester) async {
-    ApiService.configureForTesting(
-      baseUriOverride: Uri.parse('http://agent.test'),
-      client: MockClient((request) async {
-        expect(request.method, 'POST');
-        expect(request.url.path, '/sessions/session-1/stream');
-        expect(request.body, contains('hello agent'));
-        return http.Response(
-          'event: done\n'
-          'data: {"type":"done","answer":"Hello from agent"}\n\n'
-          'event: close\n'
-          'data: {}\n\n',
-          200,
-          headers: {'content-type': 'text/event-stream'},
-        );
+        if (request.method == 'POST' &&
+            request.url.path == '/sessions/session-1/stream') {
+          expect(request.body, contains('hello agent'));
+          return http.Response(
+            'event: done\n'
+            'data: {"type":"done","answer":"Hello from agent"}\n\n'
+            'event: close\n'
+            'data: {}\n\n',
+            200,
+            headers: {'content-type': 'text/event-stream'},
+          );
+        }
+        return http.Response('{"error":"unexpected"}', 404);
       }),
     );
 
     await tester.pumpWidget(
       const MaterialApp(home: DetailScreen(sessionId: 'session-1')),
     );
+    await tester.pumpAndSettle();
+
+    expect(find.text('alpha'), findsOneWidget);
+    expect(find.text('previous question'), findsOneWidget);
+    expect(find.text('previous answer'), findsOneWidget);
 
     await tester.enterText(find.byType(TextField), 'hello agent');
     await tester.tap(find.byTooltip('Send'));

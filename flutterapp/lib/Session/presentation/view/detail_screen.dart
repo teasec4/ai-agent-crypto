@@ -64,16 +64,11 @@ class _DetailScreenBodyState extends State<_DetailScreenBody> {
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('AI Agent')),
+      appBar: AppBar(title: Text(chat.title)),
       body: Column(
         children: [
           Expanded(
-            child: ListView.builder(
-              controller: _scrollController,
-              padding: const EdgeInsets.all(12),
-              itemCount: chat.messages.length,
-              itemBuilder: (_, i) => MessageBubble(message: chat.messages[i]),
-            ),
+            child: _ChatBody(chat: chat, scrollController: _scrollController),
           ),
           if (pendingApproval != null)
             ApprovalBar(
@@ -96,6 +91,63 @@ class _DetailScreenBodyState extends State<_DetailScreenBody> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ChatBody extends StatelessWidget {
+  final ChatController chat;
+  final ScrollController scrollController;
+
+  const _ChatBody({required this.chat, required this.scrollController});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    if (!chat.loaded) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (chat.loadError != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.error_outline,
+                size: 44,
+                color: theme.colorScheme.error,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Could not open project',
+                style: theme.textTheme.titleMedium,
+              ),
+              const SizedBox(height: 6),
+              Text(chat.loadError!, textAlign: TextAlign.center),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (chat.messages.isEmpty) {
+      return Center(
+        child: Text(
+          'Start the conversation.',
+          style: theme.textTheme.bodyMedium,
+        ),
+      );
+    }
+
+    return ListView.builder(
+      controller: scrollController,
+      padding: const EdgeInsets.all(12),
+      itemCount: chat.messages.length,
+      itemBuilder: (_, i) => MessageBubble(message: chat.messages[i]),
     );
   }
 }

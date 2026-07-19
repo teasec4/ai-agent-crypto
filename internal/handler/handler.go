@@ -17,6 +17,7 @@ import (
 	"ai-agent/internal/loop"
 	"ai-agent/internal/memory"
 	"ai-agent/internal/session"
+	"ai-agent/internal/workspacebrowse"
 )
 
 const (
@@ -45,6 +46,8 @@ func (h *AgentHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /sessions/{sessionID}", h.DeleteSession)
 	mux.HandleFunc("POST /sessions/{sessionID}/workspace", h.SetWorkspace)
 	mux.HandleFunc("POST /sessions", h.CreateSession)
+	mux.HandleFunc("GET /workspace/roots", h.WorkspaceRoots)
+	mux.HandleFunc("GET /workspace/browse", h.BrowseWorkspace)
 	mux.HandleFunc("POST /ask", h.Ask)
 	mux.HandleFunc("POST /chat/completion", h.Ask)
 
@@ -89,7 +92,11 @@ func (h *AgentHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	var result harness.HarnessExecutionResult
 	sessionWorkspace := state.Workspace()
 	state.WithMemory(func(workMemory *memory.WorkMemory) {
-		result = h.harness.RunWithMemory(r.Context(), message, workMemory, sessionWorkspace)
+		result = h.harness.Run(r.Context(), harness.RunRequest{
+			Task:      message,
+			Memory:    workMemory,
+			Workspace: sessionWorkspace,
+		})
 	})
 
 	writeJSON(w, http.StatusOK, AskResponse{
@@ -161,13 +168,13 @@ func (h *AgentHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 
 	var result harness.HarnessExecutionResult
 	state.WithMemory(func(workMemory *memory.WorkMemory) {
-		result = h.harness.RunWithMemoryStreaming(
-			r.Context(),
-			message,
-			workMemory,
-			sessionWorkspace,
-			func(event loop.SSEEvent) { writeSSE(w, flusher, event) },
-			func(ctx context.Context, action *approval.PendingAction) bool {
+		result = h.harness.Run(r.Context(), harness.RunRequest{
+			Task:            message,
+			Memory:          workMemory,
+			Workspace:       sessionWorkspace,
+			RequireApproval: true,
+			OnEvent:         func(event loop.SSEEvent) { writeSSE(w, flusher, event) },
+			OnApproval: func(ctx context.Context, action *approval.PendingAction) bool {
 				writeSSE(w, flusher, loop.SSEEvent{
 					Type:   loop.EventApprovalRequired,
 					Tool:   action.Tool,
@@ -191,7 +198,7 @@ func (h *AgentHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 				}
 				return approved
 			},
-		)
+		})
 	})
 
 	// Send close event — the loop already sent the final EventDone
@@ -339,6 +346,40 @@ func (h *AgentHandler) SetWorkspace(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *AgentHandler) WorkspaceRoots(w http.ResponseWriter, r *http.Request) {
+	roots, err := workspacebrowse.Roots(h.recentWorkspacePaths())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string][]WorkspaceRootResponse{
+		"roots": workspaceRootsToResponse(roots),
+	})
+}
+
+func (h *AgentHandler) BrowseWorkspace(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSpace(r.URL.Query().Get("path"))
+	roots, err := workspacebrowse.Roots(h.recentWorkspacePaths())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+		return
+	}
+	listing, err := workspacebrowse.Browse(path, roots)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+	listing.Roots = roots
+
+	writeJSON(w, http.StatusOK, WorkspaceBrowseResponse{
+		Path:       listing.Path,
+		ParentPath: listing.ParentPath,
+		Roots:      workspaceRootsToResponse(listing.Roots),
+		Entries:    workspaceEntriesToResponse(listing.Entries),
+	})
+}
+
 // ---- helpers ----
 
 func (h *AgentHandler) findOrCreateSession(w http.ResponseWriter, sessionID string) *session.State {
@@ -376,6 +417,45 @@ func visibleMessages(messages []llm.Message) []ChatMessageResponse {
 		result = append(result, resp)
 	}
 
+	return result
+}
+
+func (h *AgentHandler) recentWorkspacePaths() []string {
+	snapshots := h.sessions.List()
+	paths := make([]string, 0, len(snapshots))
+	seen := map[string]bool{}
+	for _, snapshot := range snapshots {
+		path := strings.TrimSpace(snapshot.Workspace)
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+func workspaceRootsToResponse(roots []workspacebrowse.Root) []WorkspaceRootResponse {
+	result := make([]WorkspaceRootResponse, 0, len(roots))
+	for _, root := range roots {
+		result = append(result, WorkspaceRootResponse{
+			Path: root.Path,
+			Name: root.Name,
+			Kind: root.Kind,
+		})
+	}
+	return result
+}
+
+func workspaceEntriesToResponse(entries []workspacebrowse.Entry) []WorkspaceEntryResponse {
+	result := make([]WorkspaceEntryResponse, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, WorkspaceEntryResponse{
+			Name:  entry.Name,
+			Path:  entry.Path,
+			IsDir: entry.IsDir,
+		})
+	}
 	return result
 }
 

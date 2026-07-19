@@ -49,6 +49,12 @@ class ApiService {
     _clientOverride = client;
   }
 
+  static Uri setBaseUrl(String value) {
+    final normalized = _normalizeBaseUrl(value);
+    baseUri = normalized;
+    return baseUri;
+  }
+
   static http.Client _newClient() => _clientOverride ?? http.Client();
 
   static bool get _shouldCloseClient => _clientOverride == null;
@@ -63,13 +69,6 @@ class ApiService {
     return sessionId;
   }
 
-  /// Reuse the most recently updated backend session, or create one.
-  static Future<String> getOrCreateSession() async {
-    final sessions = await listSessions();
-    if (sessions.isNotEmpty) return sessions.first.id;
-    return createSession();
-  }
-
   /// List backend sessions. The backend returns them newest first.
   static Future<List<SessionSummary>> listSessions() async {
     final json = await _getJsonList('/sessions');
@@ -78,17 +77,31 @@ class ApiService {
         .toList();
   }
 
+  /// Load one session with messages and workspace.
+  static Future<SessionDetailResponse> getSessionDetail(
+    String sessionId,
+  ) async {
+    final json = await _getJson('/sessions/$sessionId');
+    return SessionDetailResponse.fromJson(json);
+  }
+
   /// Set the workspace directory for a session. The path is resolved by the backend.
   static Future<void> setWorkspace(String sessionId, String path) async {
     await _postJson('/sessions/$sessionId/workspace', body: {'path': path});
   }
 
-  /// Send a message via POST /ask (non-streaming, returns final answer).
-  static Future<AskResponse> ask(String message, {String? sessionId}) async {
-    final body = <String, dynamic>{'message': message};
-    if (sessionId != null) body['sessionId'] = sessionId;
-    final json = await _postJson('/ask', body: body);
-    return AskResponse.fromJson(json);
+  /// List filesystem roots exposed by the backend for the project picker.
+  static Future<List<WorkspaceRoot>> listWorkspaceRoots() async {
+    final json = await _getJson('/workspace/roots');
+    return (json['roots'] as List? ?? const [])
+        .map((item) => WorkspaceRoot.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Browse a backend filesystem directory.
+  static Future<WorkspaceBrowseResponse> browseWorkspace(String path) async {
+    final json = await _getJson('/workspace/browse', query: {'path': path});
+    return WorkspaceBrowseResponse.fromJson(json);
   }
 
   /// Stream a message via POST /sessions/{sessionId}/stream.
@@ -173,7 +186,9 @@ class ApiService {
         );
       }
       if (response.body.trim().isEmpty) return <dynamic>[];
-      return jsonDecode(response.body) as List<dynamic>;
+      final decoded = jsonDecode(response.body);
+      if (decoded is List) return decoded;
+      throw const ApiException('Expected a list response from server');
     } on TimeoutException {
       throw const ApiException('Request timed out. Is the agent API running?');
     } finally {
@@ -181,9 +196,62 @@ class ApiService {
     }
   }
 
-  static Uri _resolve(String path) {
+  static Future<Map<String, dynamic>> _getJson(
+    String path, {
+    Map<String, String>? query,
+  }) async {
+    final client = _newClient();
+    try {
+      final response = await client
+          .get(_resolve(path, query: query))
+          .timeout(requestTimeout);
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw ApiException(
+          _extractError(response.body),
+          statusCode: response.statusCode,
+        );
+      }
+      if (response.body.trim().isEmpty) return <String, dynamic>{};
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) return decoded;
+      throw const ApiException('Expected an object response from server');
+    } on TimeoutException {
+      throw const ApiException('Request timed out. Is the agent API running?');
+    } finally {
+      if (_shouldCloseClient) client.close();
+    }
+  }
+
+  static Uri _resolve(String path, {Map<String, String>? query}) {
     final normalized = path.startsWith('/') ? path.substring(1) : path;
-    return baseUri.resolve(normalized);
+    return baseUri.resolveUri(Uri(path: normalized, queryParameters: query));
+  }
+
+  static Uri _normalizeBaseUrl(String value) {
+    var raw = value.trim();
+    if (raw.isEmpty) {
+      throw const ApiException('Server URL is required');
+    }
+    if (!raw.contains('://')) {
+      raw = 'http://$raw';
+    }
+
+    var uri = Uri.tryParse(raw);
+    if (uri == null || uri.host.trim().isEmpty) {
+      throw const ApiException('Enter a valid server URL or IP address');
+    }
+    if (uri.scheme != 'http' && uri.scheme != 'https') {
+      throw const ApiException(
+        'Server URL must start with http:// or https://',
+      );
+    }
+
+    if (!uri.hasPort) {
+      uri = uri.replace(port: 8080);
+    }
+    final path = uri.path.isEmpty ? '/' : uri.path;
+    return uri.replace(path: path, query: null, fragment: null);
   }
 
   static String _extractError(String body) {

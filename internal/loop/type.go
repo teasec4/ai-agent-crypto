@@ -7,8 +7,6 @@ import (
 
 	"ai-agent/internal/approval"
 	"ai-agent/internal/executor"
-	"ai-agent/internal/guardrails"
-	"ai-agent/internal/llm"
 	"ai-agent/internal/memory"
 	"ai-agent/internal/planner"
 )
@@ -84,15 +82,14 @@ type LoopResult struct {
 type LoopRequest struct {
 	Context       context.Context
 	Memory        *memory.WorkMemory
-	Guardrail     guardrails.GuardrailFn
 	Planner       *planner.LLMPlanner
 	Executor      *executor.ToolExecutor
-	LLMClient     llm.LlmClient
 	AutoApprove   bool
 	Logger        *slog.Logger
 	Workspace     string
 	MaxIterations int       // 0 means use DefaultMaxIterations
 	Deadline      time.Time // zero means no deadline
+	CompactMemory func(context.Context)
 
 	// OnApproval is called when a tool requires user confirmation.
 	// If nil and AutoApprove is false, the loop falls back to the legacy

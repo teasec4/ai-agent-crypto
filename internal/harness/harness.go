@@ -8,7 +8,6 @@ import (
 
 	"ai-agent/internal/config"
 	"ai-agent/internal/executor"
-	"ai-agent/internal/guardrails"
 	"ai-agent/internal/llm"
 	"ai-agent/internal/loop"
 	"ai-agent/internal/memory"
@@ -23,9 +22,17 @@ type Harness struct {
 	llmClient   llm.LlmClient
 	planner     *planner.LLMPlanner
 	executor    *executor.ToolExecutor
-	guardrail   guardrails.GuardrailFn
 	autoApprove bool
 	logger      *slog.Logger
+}
+
+type RunRequest struct {
+	Task            string
+	Memory          *memory.WorkMemory
+	Workspace       string
+	RequireApproval bool
+	OnEvent         func(loop.SSEEvent)
+	OnApproval      loop.ApprovalFn
 }
 
 type HarnessExecutionResult struct {
@@ -75,49 +82,49 @@ func New(cfg *config.Config) *Harness {
 	)
 
 	return &Harness{
-		llmClient: llmClient,
-		planner:   pl,
-		executor:  ex,
-		guardrail: guardrails.CombineGuardrails(
-			guardrails.MaxIterations(loop.DefaultMaxIterations),
-		),
+		llmClient:   llmClient,
+		planner:     pl,
+		executor:    ex,
 		autoApprove: cfg.AllowAutoApprove,
 		logger:      logger,
 	}
 }
 
-func (h *Harness) buildLoopRequest(ctx context.Context, workMemory *memory.WorkMemory, workspace string) loop.LoopRequest {
+func (h *Harness) buildLoopRequest(ctx context.Context, req RunRequest) loop.LoopRequest {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	return loop.LoopRequest{
 		Context:       ctx,
-		Memory:        workMemory,
-		Guardrail:     h.guardrail,
+		Memory:        req.Memory,
 		Planner:       h.planner,
 		Executor:      h.executor,
-		LLMClient:     h.llmClient,
-		AutoApprove:   h.autoApprove,
+		AutoApprove:   h.autoApprove && !req.RequireApproval,
 		Logger:        h.logger,
-		Workspace:     workspace,
+		Workspace:     req.Workspace,
 		MaxIterations: loop.DefaultMaxIterations,
 		Deadline:      time.Now().Add(defaultLoopTimeout),
+		OnEvent:       req.OnEvent,
+		OnApproval:    req.OnApproval,
+		CompactMemory: func(ctx context.Context) {
+			req.Memory.CompactIfNeeded(ctx, h.llmClient)
+		},
 	}
 }
 
-// RunWithMemory runs the agent loop with the configured approval policy.
-// Used by the REST /ask endpoint.
-func (h *Harness) RunWithMemory(ctx context.Context, task string, workMemory *memory.WorkMemory, workspace string) HarnessExecutionResult {
+func (h *Harness) Run(ctx context.Context, req RunRequest) HarnessExecutionResult {
 	h.logger.Info("processing user message",
-		"task_bytes", len(task),
-		"memory_messages", workMemory.Len(),
-		"workspace", workspace,
+		"task_bytes", len(req.Task),
+		"memory_messages", req.Memory.Len(),
+		"workspace", req.Workspace,
+		"require_approval", req.RequireApproval,
+		"streaming", req.OnEvent != nil,
 	)
 
-	workMemory.AddUser(task)
+	req.Memory.AddUser(req.Task)
 
-	req := h.buildLoopRequest(ctx, workMemory, workspace)
-	result := loop.RunLoop(req)
+	loopReq := h.buildLoopRequest(ctx, req)
+	result := loop.RunLoop(loopReq)
 
 	h.logger.Info("loop finished",
 		"stopped_by", result.StoppedBy,
@@ -127,44 +134,7 @@ func (h *Harness) RunWithMemory(ctx context.Context, task string, workMemory *me
 
 	return HarnessExecutionResult{
 		LoopResult: result,
-		Task:       task,
-	}
-}
-
-// RunWithMemoryStreaming runs the agent loop with SSE streaming and optional approval callback.
-// onEvent receives lifecycle events (thinking, tool_start, tool_done, etc).
-// onApproval is called when a tool requires user confirmation; it may block.
-func (h *Harness) RunWithMemoryStreaming(
-	ctx context.Context,
-	task string,
-	workMemory *memory.WorkMemory,
-	workspace string,
-	onEvent func(loop.SSEEvent),
-	onApproval loop.ApprovalFn,
-) HarnessExecutionResult {
-	h.logger.Info("processing user message (streaming)",
-		"task_bytes", len(task),
-		"memory_messages", workMemory.Len(),
-		"workspace", workspace,
-	)
-
-	workMemory.AddUser(task)
-
-	req := h.buildLoopRequest(ctx, workMemory, workspace)
-	req.AutoApprove = false
-	req.OnEvent = onEvent
-	req.OnApproval = onApproval
-	result := loop.RunLoop(req)
-
-	h.logger.Info("streaming loop finished",
-		"stopped_by", result.StoppedBy,
-		"iterations", result.Iterations,
-		"answer_bytes", len(result.Answer),
-	)
-
-	return HarnessExecutionResult{
-		LoopResult: result,
-		Task:       task,
+		Task:       req.Task,
 	}
 }
 
