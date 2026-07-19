@@ -58,6 +58,7 @@ Entry Points:  CLI (cmd/cli)  │  API Server (cmd/api)
 | **Workspace sandbox** | `EvalSymlinks`, path traversal prevention, blocked paths |
 | **Stateless tools** | No mutable singleton state, context propagated from loop |
 | **Allowlist** | Commands limited to `go`, `git`, `ls`, `pwd` with strict arg validation |
+| **Project memory** | Durable notes in `.agent/memory.md`, read automatically and editable by humans |
 
 ## Configuration
 
@@ -70,12 +71,22 @@ See `.env.example` for all options. Key settings:
 | `LLM_BASE_URL` | DeepSeek | OpenAI-compatible endpoint |
 | `SESSION_TTL_SECONDS` | `0` | Session cleanup TTL; `0` keeps persisted sessions |
 
+## Project Memory
+
+The agent automatically reads `.agent/memory.md` from the workspace and includes it as durable project context. Keep it short and human-editable: run commands, decisions, user preferences, and stable project facts.
+
+`.agent/` is intentionally git-ignored for local notes. Use `.agent.example/memory.md` as the starter template.
+
+The `read_project_memory` tool can show the current memory, and `propose_memory_update` can suggest an entry without modifying files.
+
 ## Available Tools
 
 | Tool | Action | Risk | Approval |
 |------|--------|------|----------|
 | `get_crypto_price` | Read crypto price | read | — |
 | `git_context` | Git status/log/diff | read | — |
+| `read_project_memory` | Read durable project notes | read | — |
+| `propose_memory_update` | Suggest memory entry | read | — |
 | `list_directory` | List workspace dirs | read | — |
 | `read_file` | Read workspace files | read | — |
 | `find_files` | Glob search | read | — |
@@ -88,3 +99,4 @@ See `.env.example` for all options. Key settings:
 ## API
 
 Full API reference in [CLIENT.md](CLIENT.md).
+Client integration walkthrough in [docs/client-connection-guide.md](docs/client-connection-guide.md).

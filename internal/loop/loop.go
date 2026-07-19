@@ -134,7 +134,7 @@ func RunLoop(req LoopRequest) (res LoopResult) {
 
 		// ---- Plan step ----
 		planStart := time.Now()
-		planResult, err := req.Planner.Plan(req.Context, req.Memory.Messages)
+		planResult, err := req.Planner.Plan(req.Context, req.Memory.Messages, req.Workspace)
 		planElapsed := time.Since(planStart).Milliseconds()
 
 		if err != nil {

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"ai-agent/internal/llm"
+	"ai-agent/internal/projectmemory"
 	"ai-agent/internal/tools/registry"
 )
 
@@ -32,14 +33,19 @@ func (p *LLMPlanner) SetLogger(logger *slog.Logger) {
 
 // Plan uses the LLM to determine the next action.
 // Tools are passed natively via the API's tools parameter.
-func (p *LLMPlanner) Plan(ctx context.Context, history []llm.Message) (PlanResult, error) {
+func (p *LLMPlanner) Plan(ctx context.Context, history []llm.Message, workspace string) (PlanResult, error) {
 	tools := p.registry.ToolDefinitions()
-	messages := p.buildMessages(history)
+	projectMemory, err := projectmemory.Read(workspace)
+	if err != nil {
+		p.logger.Warn("planner: failed to read project memory", "error", err.Error())
+	}
+	messages := p.buildMessages(history, projectMemory)
 
 	p.logger.Debug("planner request",
 		"messages", len(messages),
 		"tools", len(tools),
 		"last_role", lastRole(history),
+		"project_memory_bytes", len(projectMemory),
 	)
 
 	chatResp, err := p.llmClient.Chat(ctx, messages, tools)
@@ -113,7 +119,7 @@ func (p *LLMPlanner) Plan(ctx context.Context, history []llm.Message) (PlanResul
 }
 
 // buildMessages constructs the LLM messages array.
-func (p *LLMPlanner) buildMessages(history []llm.Message) []llm.Message {
+func (p *LLMPlanner) buildMessages(history []llm.Message, projectMemory string) []llm.Message {
 	systemPrompt := `You are an AI coding assistant with access to tools. When the user asks you to do something:
 
 1. If you have all the information needed, answer directly.
@@ -122,14 +128,22 @@ func (p *LLMPlanner) buildMessages(history []llm.Message) []llm.Message {
 4. After completing a task, summarize briefly in 1-2 sentences.
 5. If a task is impossible with the available tools, say so clearly.
 6. For cryptocurrency price/rank/market questions, always call get_crypto_price first. Do not refuse because a ticker looks unfamiliar or rare; try the tool with the user's symbol/name/id and let the tool resolve it. Only say you cannot find it after the tool fails.
+7. Use the project memory as durable project context. If you learn a stable fact or user preference worth remembering, call propose_memory_update instead of silently changing memory.
 
 You have access to the following tool categories:
 - File operations: read, write, edit, search, list directories
 - Git operations: status, diff, log, branch info
 - Command execution: go, git, ls, pwd
+- Project memory: read durable notes and propose memory updates
 - Crypto: cryptocurrency price lookups by symbol, ticker, name, or CoinGecko id`
 
 	messages := []llm.Message{{Role: "system", Content: systemPrompt}}
+	if projectMemory != "" {
+		messages = append(messages, llm.Message{
+			Role:    "system",
+			Content: "Project memory from .agent/memory.md:\n" + projectMemory,
+		})
+	}
 	for _, msg := range history {
 		// Skip the memory's default system prompt — our planner replaces it
 		if msg.Role == "system" && strings.Contains(msg.Content, "helpful assistant") {

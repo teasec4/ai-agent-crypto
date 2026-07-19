@@ -385,6 +385,8 @@ function ToolCallCard({ iteration }: { iteration: LoopIteration }) {
 | Tool | Action | Risk | Key Parameters |
 |---|---|---|---|
 | Git | `git_context` | read | `mode`: branch, status, changed_files, diff, branch_diff, log |
+| Project memory | `read_project_memory` | read | none |
+| Memory proposal | `propose_memory_update` | read | `section`, `entry`, `reason` |
 | List directory | `list_directory` | read | `path`, `max_entries` |
 | Read file | `read_file` | read | `path`, `max_bytes` |
 | Find files | `find_files` | read | `pattern` (glob) |

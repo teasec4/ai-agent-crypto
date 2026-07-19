@@ -437,6 +437,8 @@ Agent: Готово! Создал файл test.txt.
 |------|--------|------|----------|
 | Crypto | `get_crypto_price` | read | — |
 | Git | `git_context` | read | — |
+| Project Memory | `read_project_memory` | read | — |
+| Memory Proposal | `propose_memory_update` | read | — |
 | List Dir | `list_directory` | read | — |
 | Read File | `read_file` | read | — |
 | Find Files | `find_files` | read | — |

@@ -46,6 +46,8 @@ func New(cfg *config.Config) *Harness {
 		tools.NewReadFileTool(),
 		tools.NewFindFilesTool(),
 		tools.NewSearchTextTool(),
+		tools.NewReadProjectMemoryTool(),
+		tools.NewProposeMemoryUpdateTool(),
 		tools.NewCreateDirectoryTool(),
 		tools.NewWriteFileTool(),
 		tools.NewEditFileTool(),
